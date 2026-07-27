@@ -606,7 +606,11 @@ function App() {
         remoteVideoRef.current.srcObject = e.streams[0];
         remoteVideoRef.current.play().catch(() => {});
       }
-      setRemoteHasVideo(e.streams[0].getVideoTracks().length > 0);
+      if (e.track.kind === "video") {
+        setRemoteHasVideo(!e.track.muted);
+        e.track.onunmute = () => setRemoteHasVideo(true);
+        e.track.onmute = () => setRemoteHasVideo(false);
+      }
     };
     return pc;
   };

@@ -162,6 +162,10 @@ const ReplyIcon = makeIcon(<path d="M9 17 4 12l5-5M4 12h10a5 5 0 0 1 5 5v2"/>);
 const ForwardIcon = makeIcon(<path d="M15 17l5-5-5-5M20 12H10a5 5 0 0 0-5 5v2"/>);
 const PencilIcon = makeIcon(<><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></>);
 const MoreIcon = makeIcon(<><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></>);
+const PhoneOff = makeIcon(<><path d="M4 4l16 16"/><path d="M5.5 5.6C4 7 3 8.5 3 8.5l4 5 2.5-2.5"/><path d="M14.5 13.5 17 16l4-3s-1-2.5-3-4.5"/></>);
+const Mic = makeIcon(<><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/></>);
+const MicOff = makeIcon(<><path d="M3 3l18 18"/><path d="M9 9v3a3 3 0 0 0 4.6 2.5"/><path d="M15 6a3 3 0 0 0-6 0v3"/><path d="M5 10a7 7 0 0 0 10.6 6"/><path d="M19 10a7 7 0 0 1-1 3.6"/><path d="M12 19v3"/></>);
+const VideoOff = makeIcon(<><path d="M3 3l18 18"/><path d="M16 8l5-3v14l-5-3"/><rect x="2" y="6" width="14" height="12" rx="2"/></>);
 const FileIcon = makeIcon(<><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v5h5"/></>);
 const ImageIcon = makeIcon(<><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></>);
 const FileBarChart = makeIcon(<><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M9 17v-4M12.5 17v-7M16 17v-2"/></>);
@@ -533,6 +537,202 @@ function App() {
     (Date.now() - new Date(activeCall.startedAt).getTime()) < 90000 &&
     dismissedCallAt !== activeCall.startedAt;
 
+  // ================= Native 1-to-1 WebRTC calling (no third-party service) =================
+  const [incomingCall, setIncomingCall] = useState(null); // { callId, callerId, callerName }
+  const [callPhase, setCallPhase] = useState("idle"); // idle | outgoing | active
+  const [callPeerName, setCallPeerName] = useState("");
+  const [micOn, setMicOn] = useState(true);
+  const [camOn, setCamOn] = useState(true);
+  const [callError, setCallError] = useState("");
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const pcRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const currentCallIdRef = useRef(null);
+  const incomingCallRef = useRef(null);
+  const myCandCountRef = useRef(0);
+  const appliedTheirCandCountRef = useRef(0);
+  const callDocEsRef = useRef(null);
+  const ringIntervalRef = useRef(null);
+
+  const startRing = () => {
+    stopRing();
+    playTone(660, 0.3);
+    ringIntervalRef.current = setInterval(() => playTone(660, 0.3), 1500);
+  };
+  const stopRing = () => {
+    if (ringIntervalRef.current) { clearInterval(ringIntervalRef.current); ringIntervalRef.current = null; }
+  };
+
+  const cleanupCall = () => {
+    stopRing();
+    if (pcRef.current) { try { pcRef.current.close(); } catch (e) {} pcRef.current = null; }
+    if (localStreamRef.current) { localStreamRef.current.getTracks().forEach((t) => t.stop()); localStreamRef.current = null; }
+    if (callDocEsRef.current) { callDocEsRef.current.close(); callDocEsRef.current = null; }
+    currentCallIdRef.current = null;
+    myCandCountRef.current = 0;
+    appliedTheirCandCountRef.current = 0;
+    setCallPhase("idle");
+    setCallPeerName("");
+    setMicOn(true);
+    setCamOn(true);
+  };
+
+  const createPeerConnection = (callIdForConn, role) => {
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      const field = role === "caller" ? "candidatesCaller" : "candidatesCallee";
+      myCandCountRef.current += 1;
+      fbSet(`shared/calls/${callIdForConn}/${field}/${myCandCountRef.current}`, e.candidate.toJSON());
+    };
+    pc.ontrack = (e) => {
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+    };
+    return pc;
+  };
+
+  const attachLocalStream = async (pc) => {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStreamRef.current = stream;
+    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+  };
+
+  const listenToCallDoc = (callIdForConn, role) => {
+    if (callDocEsRef.current) callDocEsRef.current.close();
+    callDocEsRef.current = fbListen(`shared/calls/${callIdForConn}`, async () => {
+      const doc = await fbGet(`shared/calls/${callIdForConn}`);
+      if (currentCallIdRef.current !== callIdForConn) return;
+      if (!doc || doc.status === "ended" || doc.status === "declined") {
+        if (doc && doc.status === "declined") setCallError("Call declined.");
+        cleanupCall();
+        return;
+      }
+      const pc = pcRef.current;
+      if (!pc) return;
+      if (role === "caller" && doc.answer && !pc.currentRemoteDescription) {
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(doc.answer));
+          setCallPhase("active");
+          stopRing();
+        } catch (e) {}
+      }
+      const theirField = role === "caller" ? "candidatesCallee" : "candidatesCaller";
+      const theirCands = doc[theirField];
+      if (theirCands) {
+        const keys = Object.keys(theirCands).map(Number).sort((a, b) => a - b);
+        for (const k of keys) {
+          if (k > appliedTheirCandCountRef.current) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(theirCands[k])); } catch (e) {}
+          }
+        }
+        if (keys.length) appliedTheirCandCountRef.current = Math.max(...keys);
+      }
+    });
+  };
+
+  const startOneToOneCall = async (targetId, targetName) => {
+    if (callPhase !== "idle" || incomingCallRef.current) { showToast("You're already on a call."); return; }
+    setCallError("");
+    const newCallId = uid();
+    currentCallIdRef.current = newCallId;
+    setCallPeerName(targetName);
+    setCallPhase("outgoing");
+    startRing();
+    try {
+      const pc = createPeerConnection(newCallId, "caller");
+      pcRef.current = pc;
+      await attachLocalStream(pc);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await fbSet(`shared/calls/${newCallId}`, {
+        callerId: identity.id, callerName: identity.name,
+        calleeId: targetId, calleeName: targetName,
+        offer: { type: offer.type, sdp: offer.sdp },
+        status: "ringing", createdAt: now(),
+      });
+      await fbSet(`shared/callSignals/${targetId}`, { callId: newCallId, callerId: identity.id, callerName: identity.name, createdAt: now() });
+      listenToCallDoc(newCallId, "caller");
+    } catch (e) {
+      setCallError("Couldn't start the call — check camera/mic permissions.");
+      cleanupCall();
+    }
+  };
+
+  const acceptIncomingCall = async () => {
+    if (!incomingCall) return;
+    const { callId: incId, callerName } = incomingCall;
+    stopRing();
+    setIncomingCall(null);
+    incomingCallRef.current = null;
+    await fbDelete(`shared/callSignals/${identity.id}`);
+    currentCallIdRef.current = incId;
+    setCallPeerName(callerName);
+    setCallPhase("active");
+    try {
+      const doc = await fbGet(`shared/calls/${incId}`);
+      if (!doc || !doc.offer) { setCallError("Call is no longer available."); cleanupCall(); return; }
+      const pc = createPeerConnection(incId, "callee");
+      pcRef.current = pc;
+      await attachLocalStream(pc);
+      await pc.setRemoteDescription(new RTCSessionDescription(doc.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await fbSet(`shared/calls/${incId}/answer`, { type: answer.type, sdp: answer.sdp });
+      await fbSet(`shared/calls/${incId}/status`, "accepted");
+      listenToCallDoc(incId, "callee");
+    } catch (e) {
+      setCallError("Couldn't join the call — check camera/mic permissions.");
+      cleanupCall();
+    }
+  };
+
+  const declineIncomingCall = async () => {
+    if (!incomingCall) return;
+    stopRing();
+    const { callId: incId } = incomingCall;
+    setIncomingCall(null);
+    incomingCallRef.current = null;
+    await fbDelete(`shared/callSignals/${identity.id}`);
+    await fbSet(`shared/calls/${incId}/status`, "declined");
+  };
+
+  const hangUpCall = async () => {
+    const endingId = currentCallIdRef.current;
+    if (endingId) await fbSet(`shared/calls/${endingId}/status`, "ended");
+    cleanupCall();
+  };
+
+  const toggleMic = () => {
+    if (localStreamRef.current) localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = !micOn; });
+    setMicOn((s) => !s);
+  };
+  const toggleCam = () => {
+    if (localStreamRef.current) localStreamRef.current.getVideoTracks().forEach((t) => { t.enabled = !camOn; });
+    setCamOn((s) => !s);
+  };
+
+  // listen for incoming calls addressed to me
+  useEffect(() => {
+    if (!identity || !window.FIREBASE_DB_URL) return;
+    const check = async () => {
+      const sig = await fbGet(`shared/callSignals/${identity.id}`);
+      if (sig && !currentCallIdRef.current && !incomingCallRef.current) {
+        incomingCallRef.current = sig;
+        setIncomingCall(sig);
+        startRing();
+      } else if (!sig && incomingCallRef.current) {
+        incomingCallRef.current = null;
+        setIncomingCall(null);
+        stopRing();
+      }
+    };
+    check();
+    const listener = fbListen(`shared/callSignals/${identity.id}`, check);
+    return () => listener.close();
+  }, [identity]);
+
   // ---- load identity ----
   useEffect(() => {
     (async () => {
@@ -853,6 +1053,13 @@ function App() {
           </div>
         </div>
       )}
+      <CallOverlay
+        incomingCall={incomingCall} callPhase={callPhase} callPeerName={callPeerName}
+        callError={callError} micOn={micOn} camOn={camOn}
+        localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef}
+        onAccept={acceptIncomingCall} onDecline={declineIncomingCall} onHangUp={hangUpCall}
+        onToggleMic={toggleMic} onToggleCam={toggleCam} onDismissError={() => setCallError("")}
+      />
       <div className="flex max-w-7xl mx-auto">
         <SideNav tab={tab} setTab={setTab} />
         <main className="flex-1 min-w-0 px-4 md:px-8 py-6">
@@ -865,7 +1072,7 @@ function App() {
           {tab === "tasks" && (
             <Tasks data={data} persist={persist} identity={identity} filter={taskFilter} setFilter={setTaskFilter} />
           )}
-          {tab === "team" && <Team data={data} persist={persist} identity={identity} presence={presence} />}
+          {tab === "team" && <Team data={data} persist={persist} identity={identity} presence={presence} onCall={startOneToOneCall} callPhase={callPhase} />}
           {tab === "messages" && <Messages data={data} persist={persist} identity={identity} onSent={playSent} onStartCall={startCall} callLink={callLink} />}
           {tab === "reports" && <Reports data={data} />}
         </main>
@@ -1654,6 +1861,39 @@ function computeMentions(text, team) {
 }
 
 // ---------------------------------------------------------------------------
+// Firebase signaling helpers for native WebRTC calling — no third-party
+// meeting service, just the Firebase Realtime Database already in use.
+// ---------------------------------------------------------------------------
+const ICE_SERVERS = [
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+];
+function fbUrl(path) { return window.FIREBASE_DB_URL + "/" + path + ".json"; }
+async function fbSet(path, value) {
+  await fetch(fbUrl(path), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
+}
+async function fbGet(path) {
+  try {
+    const res = await fetch(fbUrl(path));
+    return await res.json();
+  } catch (e) { return null; }
+}
+async function fbDelete(path) {
+  try { await fetch(fbUrl(path), { method: "DELETE" }); } catch (e) {}
+}
+// listens for ANY change under `path` and calls onChange() (no payload — caller re-fetches
+// the authoritative current state with fbGet, simpler and more robust than parsing SSE diffs)
+function fbListen(path, onChange) {
+  let es;
+  try {
+    es = new EventSource(fbUrl(path));
+    es.addEventListener("put", onChange);
+    es.addEventListener("patch", onChange);
+    es.onerror = () => {}; // browser auto-reconnects
+  } catch (e) {}
+  return { close: () => { try { es && es.close(); } catch (e) {} } };
+}
+
+// ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
 function Projects({ data, persist, goTasks, identity }) {
@@ -2201,7 +2441,7 @@ function TaskDetail({ task, project, team, identity, isAdmin, onClose, onUpdate,
 // ---------------------------------------------------------------------------
 // Team
 // ---------------------------------------------------------------------------
-function Team({ data, persist, identity, presence }) {
+function Team({ data, persist, identity, presence, onCall, callPhase }) {
   const { t } = useLang();
   const { team, tasks } = data;
   const isAdmin = data.adminId === identity.id;
@@ -2312,6 +2552,12 @@ function Team({ data, persist, identity, presence }) {
                 <p className="text-xs text-slate-500 truncate">{m.role} {m.initials && <span className="font-mono text-slate-400">· {m.initials}</span>}</p>
                 <p className="text-[11px] mt-0.5" style={{ color: GOLD }}>{open} {t("openTasksCount")}</p>
               </div>
+              {m.id !== identity.id && (
+                <button onClick={() => onCall(m.id, m.name)} disabled={callPhase !== "idle"}
+                  className="p-1.5 rounded-lg disabled:opacity-30" style={{ background: PAPER, color: TEAL }} title={`Call ${m.name}`}>
+                  <PhoneCall size={14} />
+                </button>
+              )}
               {isAdmin && (
                 <button onClick={() => openEdit(m)} className="text-slate-300 hover:text-slate-600" title="Edit member / login">
                   <Lock size={14} />
@@ -2498,13 +2744,11 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
 
   const pickFile = () => fileInputRef.current && fileInputRef.current.click();
 
-  const handleFile = (e) => {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
+  const uploadFile = (file) => {
     if (!file) return;
     setUploadError("");
     if (file.size > MAX_ATTACHMENT_BYTES) {
-      setUploadError(`"${file.name}" is ${formatBytes(file.size)} — the limit is 3 MB per file.`);
+      setUploadError(`"${file.name || "Pasted image"}" is ${formatBytes(file.size)} — the limit is 3 MB per file.`);
       return;
     }
     if (!window.FIREBASE_DB_URL) {
@@ -2526,7 +2770,7 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
           const msg = {
             id: uid(), authorId: identity.id, projectId: channel === "general" ? null : channel,
             text: text.trim(), createdAt: now(),
-            attachment: { id: fileId, name: file.name, mimeType: file.type || "application/octet-stream", size: file.size },
+            attachment: { id: fileId, name: file.name || "Screenshot.png", mimeType: file.type || "application/octet-stream", size: file.size },
             ...(mentions.length ? { mentions } : {}),
             ...(replyingTo ? { replyTo: buildReplySnapshot(replyingTo) } : {}),
           };
@@ -2542,6 +2786,27 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
     };
     reader.onerror = () => { setUploadError("Couldn't read that file."); setUploading(false); };
     reader.readAsDataURL(file);
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    uploadFile(file);
+  };
+
+  const handlePaste = (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.startsWith("image/")) {
+        const file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          uploadFile(file);
+        }
+        break;
+      }
+    }
   };
 
   const saveEdit = (m) => {
@@ -2763,7 +3028,8 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
             </button>
             <input ref={textInputRef} value={text} onChange={(e) => handleTextChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && mentionMatches.length === 0) send(); if (e.key === "Escape") setMentionQuery(null); }}
-              placeholder={uploading ? "Uploading…" : `Message ${channel === "general" ? "the team" : "this project"}… (@ to mention)`} className="input flex-1" />
+              onPaste={handlePaste}
+              placeholder={uploading ? "Uploading…" : `Message ${channel === "general" ? "the team" : "this project"}… (@ to mention, paste a screenshot)`} className="input flex-1" />
             <button onClick={send} className="px-3 rounded-lg text-white shrink-0" style={{ background: NAVY }}><Send size={15} /></button>
           </div>
         </div>
@@ -3045,6 +3311,87 @@ function Reports({ data }) {
 // ---------------------------------------------------------------------------
 // Shared UI bits
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// CallOverlay — native 1-to-1 WebRTC call UI (incoming / outgoing / active)
+// ---------------------------------------------------------------------------
+function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localVideoRef, remoteVideoRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
+  if (callError) {
+    return (
+      <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.6)" }}>
+        <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full text-center">
+          <PhoneOff size={28} className="mx-auto mb-2 text-red-500" />
+          <p className="text-sm text-slate-700 mb-4">{callError}</p>
+          <button onClick={onDismissError} className="px-4 py-2 rounded-lg text-white text-sm font-medium" style={{ background: NAVY }}>OK</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (incomingCall && callPhase === "idle") {
+    return (
+      <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+        <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full text-center">
+          <div className="w-16 h-16 rounded-full mx-auto mb-3 flex items-center justify-center animate-pulse" style={{ background: TEAL }}>
+            <PhoneCall size={26} className="text-white" />
+          </div>
+          <p className="text-xs text-slate-400 mb-1">Incoming call</p>
+          <p className="text-lg font-semibold mb-6" style={{ color: NAVY }}>{incomingCall.callerName}</p>
+          <div className="flex items-center justify-center gap-4">
+            <button onClick={onDecline} className="w-14 h-14 rounded-full flex items-center justify-center text-white" style={{ background: "#B42318" }}>
+              <PhoneOff size={22} />
+            </button>
+            <button onClick={onAccept} className="w-14 h-14 rounded-full flex items-center justify-center text-white" style={{ background: TEAL }}>
+              <PhoneCall size={22} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (callPhase === "outgoing") {
+    return (
+      <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.7)" }}>
+        <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full text-center">
+          <div className="w-16 h-16 rounded-full mx-auto mb-3 flex items-center justify-center animate-pulse" style={{ background: NAVY }}>
+            <PhoneCall size={26} className="text-white" />
+          </div>
+          <p className="text-xs text-slate-400 mb-1">Calling…</p>
+          <p className="text-lg font-semibold mb-6" style={{ color: NAVY }}>{callPeerName}</p>
+          <button onClick={onHangUp} className="w-14 h-14 rounded-full flex items-center justify-center text-white mx-auto" style={{ background: "#B42318" }}>
+            <PhoneOff size={22} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (callPhase === "active") {
+    return (
+      <div className="fixed inset-0 z-[80] flex flex-col" style={{ background: "#0B1220" }}>
+        <div className="flex-1 relative">
+          <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+          <div className="absolute top-4 left-4 text-white text-sm font-medium bg-black/40 px-3 py-1.5 rounded-lg">{callPeerName}</div>
+          <video ref={localVideoRef} autoPlay playsInline muted className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 object-cover rounded-xl border-2 border-white/20" />
+        </div>
+        <div className="flex items-center justify-center gap-4 py-5" style={{ background: "#0B1220" }}>
+          <button onClick={onToggleMic} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: micOn ? "#1E293B" : "#B42318", color: "white" }}>
+            {micOn ? <Mic size={18} /> : <MicOff size={18} />}
+          </button>
+          <button onClick={onHangUp} className="w-14 h-14 rounded-full flex items-center justify-center text-white" style={{ background: "#B42318" }}>
+            <PhoneOff size={22} />
+          </button>
+          <button onClick={onToggleCam} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: camOn ? "#1E293B" : "#B42318", color: "white" }}>
+            {camOn ? <Video size={18} /> : <VideoOff size={18} />}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function Modal({ title, children, onClose, wide }) {
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" onClick={onClose}>

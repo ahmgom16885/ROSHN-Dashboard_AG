@@ -655,7 +655,7 @@ function App() {
       await fbSet(`shared/callSignals/${targetId}`, { callId: newCallId, callerId: identity.id, callerName: identity.name, createdAt: now() });
       listenToCallDoc(newCallId, "caller");
     } catch (e) {
-      setCallError("Couldn't start the call — check camera/mic permissions.");
+      setCallError("Couldn't start the call: " + (e && e.message ? e.message : "unknown error") + ".");
       cleanupCall();
     }
   };
@@ -683,7 +683,7 @@ function App() {
       await fbSet(`shared/calls/${incId}/status`, "accepted");
       listenToCallDoc(incId, "callee");
     } catch (e) {
-      setCallError("Couldn't join the call — check camera/mic permissions.");
+      setCallError("Couldn't join the call: " + (e && e.message ? e.message : "unknown error") + ".");
       cleanupCall();
     }
   };

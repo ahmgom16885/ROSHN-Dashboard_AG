@@ -796,6 +796,20 @@ function App() {
     else startScreenShare();
   };
 
+  // cross-browser-safe check for whether the remote video element is actually
+  // rendering real frames — more reliable than track mute/unmute events, which
+  // Safari/iOS implements inconsistently
+  useEffect(() => {
+    if (callPhase !== "active") return;
+    const iv = setInterval(() => {
+      const v = remoteVideoRef.current;
+      if (!v) return;
+      const hasFrames = v.videoWidth > 0 && v.videoHeight > 0;
+      setRemoteHasVideo((prev) => (prev !== hasFrames ? hasFrames : prev));
+    }, 700);
+    return () => clearInterval(iv);
+  }, [callPhase]);
+
   // listen for incoming calls addressed to me
   useEffect(() => {
     if (!identity || !window.FIREBASE_DB_URL) return;

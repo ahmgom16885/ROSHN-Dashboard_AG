@@ -543,6 +543,8 @@ function App() {
   const [callPeerName, setCallPeerName] = useState("");
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const [localHasVideo, setLocalHasVideo] = useState(true);
+  const [remoteHasVideo, setRemoteHasVideo] = useState(false);
   const [callError, setCallError] = useState("");
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -576,6 +578,8 @@ function App() {
     setCallPeerName("");
     setMicOn(true);
     setCamOn(true);
+    setLocalHasVideo(true);
+    setRemoteHasVideo(false);
   };
 
   const createPeerConnection = (callIdForConn, role) => {
@@ -588,12 +592,21 @@ function App() {
     };
     pc.ontrack = (e) => {
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+      setRemoteHasVideo(e.streams[0].getVideoTracks().length > 0);
     };
     return pc;
   };
 
   const attachLocalStream = async (pc) => {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalHasVideo(true);
+    } catch (e) {
+      // no camera found/available on this device — still make the call work, just audio-only
+      stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+      setLocalHasVideo(false);
+    }
     localStreamRef.current = stream;
     stream.getTracks().forEach((t) => pc.addTrack(t, stream));
     if (localVideoRef.current) localVideoRef.current.srcObject = stream;
@@ -1055,7 +1068,7 @@ function App() {
       )}
       <CallOverlay
         incomingCall={incomingCall} callPhase={callPhase} callPeerName={callPeerName}
-        callError={callError} micOn={micOn} camOn={camOn}
+        callError={callError} micOn={micOn} camOn={camOn} localHasVideo={localHasVideo} remoteHasVideo={remoteHasVideo}
         localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef}
         onAccept={acceptIncomingCall} onDecline={declineIncomingCall} onHangUp={hangUpCall}
         onToggleMic={toggleMic} onToggleCam={toggleCam} onDismissError={() => setCallError("")}
@@ -3314,7 +3327,7 @@ function Reports({ data }) {
 // ---------------------------------------------------------------------------
 // CallOverlay — native 1-to-1 WebRTC call UI (incoming / outgoing / active)
 // ---------------------------------------------------------------------------
-function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localVideoRef, remoteVideoRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
+function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, localVideoRef, remoteVideoRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
   if (callError) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.6)" }}>
@@ -3370,9 +3383,23 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
     return (
       <div className="fixed inset-0 z-[80] flex flex-col" style={{ background: "#0B1220" }}>
         <div className="flex-1 relative">
-          <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+          <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" style={{ display: remoteHasVideo ? "block" : "none" }} />
+          {!remoteHasVideo && (
+            <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+              <div className="w-20 h-20 rounded-full flex items-center justify-center text-white text-2xl font-semibold" style={{ background: NAVY }}>
+                {(callPeerName || "?").split(" ").filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join("")}
+              </div>
+              <p className="text-white/60 text-xs">Audio only</p>
+            </div>
+          )}
           <div className="absolute top-4 left-4 text-white text-sm font-medium bg-black/40 px-3 py-1.5 rounded-lg">{callPeerName}</div>
-          <video ref={localVideoRef} autoPlay playsInline muted className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 object-cover rounded-xl border-2 border-white/20" />
+          {localHasVideo ? (
+            <video ref={localVideoRef} autoPlay playsInline muted className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 object-cover rounded-xl border-2 border-white/20" />
+          ) : (
+            <div className="absolute bottom-4 right-4 w-28 h-20 sm:w-36 sm:h-24 rounded-xl border-2 border-white/20 flex items-center justify-center" style={{ background: "#1E293B" }}>
+              <p className="text-white/50 text-[10px]">No camera</p>
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-center gap-4 py-5" style={{ background: "#0B1220" }}>
           <button onClick={onToggleMic} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: micOn ? "#1E293B" : "#B42318", color: "white" }}>
@@ -3381,7 +3408,7 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
           <button onClick={onHangUp} className="w-14 h-14 rounded-full flex items-center justify-center text-white" style={{ background: "#B42318" }}>
             <PhoneOff size={22} />
           </button>
-          <button onClick={onToggleCam} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: camOn ? "#1E293B" : "#B42318", color: "white" }}>
+          <button onClick={onToggleCam} disabled={!localHasVideo} className="w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30" style={{ background: camOn ? "#1E293B" : "#B42318", color: "white" }}>
             {camOn ? <Video size={18} /> : <VideoOff size={18} />}
           </button>
         </div>

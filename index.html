@@ -166,6 +166,7 @@ const PhoneOff = makeIcon(<><path d="M4 4l16 16"/><path d="M5.5 5.6C4 7 3 8.5 3 
 const Mic = makeIcon(<><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/></>);
 const MicOff = makeIcon(<><path d="M3 3l18 18"/><path d="M9 9v3a3 3 0 0 0 4.6 2.5"/><path d="M15 6a3 3 0 0 0-6 0v3"/><path d="M5 10a7 7 0 0 0 10.6 6"/><path d="M19 10a7 7 0 0 1-1 3.6"/><path d="M12 19v3"/></>);
 const VideoOff = makeIcon(<><path d="M3 3l18 18"/><path d="M16 8l5-3v14l-5-3"/><rect x="2" y="6" width="14" height="12" rx="2"/></>);
+const ScreenShare = makeIcon(<><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M12 8v5M9.5 10.5 12 8l2.5 2.5"/></>);
 const FileIcon = makeIcon(<><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v5h5"/></>);
 const ImageIcon = makeIcon(<><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></>);
 const FileBarChart = makeIcon(<><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M9 17v-4M12.5 17v-7M16 17v-2"/></>);
@@ -545,6 +546,9 @@ function App() {
   const [camOn, setCamOn] = useState(true);
   const [localHasVideo, setLocalHasVideo] = useState(true);
   const [remoteHasVideo, setRemoteHasVideo] = useState(false);
+  const [sharingScreen, setSharingScreen] = useState(false);
+  const screenStreamRef = useRef(null);
+  const cameraVideoTrackRef = useRef(null);
   const [callError, setCallError] = useState("");
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -570,20 +574,27 @@ function App() {
     stopRing();
     if (pcRef.current) { try { pcRef.current.close(); } catch (e) {} pcRef.current = null; }
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach((t) => t.stop()); localStreamRef.current = null; }
+    if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach((t) => t.stop()); screenStreamRef.current = null; }
     if (callDocEsRef.current) { callDocEsRef.current.close(); callDocEsRef.current = null; }
     currentCallIdRef.current = null;
     myCandCountRef.current = 0;
     appliedTheirCandCountRef.current = 0;
+    cameraVideoTrackRef.current = null;
     setCallPhase("idle");
     setCallPeerName("");
     setMicOn(true);
     setCamOn(true);
     setLocalHasVideo(true);
     setRemoteHasVideo(false);
+    setSharingScreen(false);
   };
 
   const createPeerConnection = (callIdForConn, role) => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    // fixed transceiver order (audio, then video) on both sides — lets us swap
+    // the video track later (e.g. for screen share) with no renegotiation needed
+    pc.addTransceiver("audio", { direction: "sendrecv" });
+    pc.addTransceiver("video", { direction: "sendrecv" });
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
       const field = role === "caller" ? "candidatesCaller" : "candidatesCallee";
@@ -591,7 +602,10 @@ function App() {
       fbSet(`shared/calls/${callIdForConn}/${field}/${myCandCountRef.current}`, e.candidate.toJSON());
     };
     pc.ontrack = (e) => {
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = e.streams[0];
+        remoteVideoRef.current.play().catch(() => {});
+      }
       setRemoteHasVideo(e.streams[0].getVideoTracks().length > 0);
     };
     return pc;
@@ -599,17 +613,25 @@ function App() {
 
   const attachLocalStream = async (pc) => {
     let stream;
+    let hasVideo = true;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setLocalHasVideo(true);
     } catch (e) {
       // no camera found/available on this device — still make the call work, just audio-only
       stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-      setLocalHasVideo(false);
+      hasVideo = false;
     }
+    setLocalHasVideo(hasVideo);
     localStreamRef.current = stream;
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    const [audioTransceiver, videoTransceiver] = pc.getTransceivers();
+    const audioTrack = stream.getAudioTracks()[0];
+    const videoTrack = stream.getVideoTracks()[0];
+    if (audioTrack) await audioTransceiver.sender.replaceTrack(audioTrack);
+    if (videoTrack) await videoTransceiver.sender.replaceTrack(videoTrack);
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream;
+      localVideoRef.current.play().catch(() => {});
+    }
   };
 
   const listenToCallDoc = (callIdForConn, role) => {
@@ -724,6 +746,50 @@ function App() {
   const toggleCam = () => {
     if (localStreamRef.current) localStreamRef.current.getVideoTracks().forEach((t) => { t.enabled = !camOn; });
     setCamOn((s) => !s);
+  };
+
+  const startScreenShare = async () => {
+    if (!pcRef.current) return;
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      const [, videoTransceiver] = pcRef.current.getTransceivers();
+      cameraVideoTrackRef.current = videoTransceiver.sender.track; // remember to restore later (may be null)
+      await videoTransceiver.sender.replaceTrack(screenTrack);
+      screenStreamRef.current = screenStream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = screenStream;
+        localVideoRef.current.play().catch(() => {});
+      }
+      setLocalHasVideo(true);
+      setSharingScreen(true);
+      screenTrack.onended = () => stopScreenShare();
+    } catch (e) {
+      // user cancelled the share picker — no-op
+    }
+  };
+
+  const stopScreenShare = async () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+    }
+    setSharingScreen(false);
+    if (pcRef.current) {
+      const [, videoTransceiver] = pcRef.current.getTransceivers();
+      const camTrack = cameraVideoTrackRef.current;
+      try { await videoTransceiver.sender.replaceTrack(camTrack || null); } catch (e) {}
+      setLocalHasVideo(!!camTrack);
+    }
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+      localVideoRef.current.play().catch(() => {});
+    }
+  };
+
+  const toggleScreenShare = () => {
+    if (sharingScreen) stopScreenShare();
+    else startScreenShare();
   };
 
   // listen for incoming calls addressed to me
@@ -1069,6 +1135,7 @@ function App() {
       <CallOverlay
         incomingCall={incomingCall} callPhase={callPhase} callPeerName={callPeerName}
         callError={callError} micOn={micOn} camOn={camOn} localHasVideo={localHasVideo} remoteHasVideo={remoteHasVideo}
+        sharingScreen={sharingScreen} onToggleScreenShare={toggleScreenShare}
         localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef}
         onAccept={acceptIncomingCall} onDecline={declineIncomingCall} onHangUp={hangUpCall}
         onToggleMic={toggleMic} onToggleCam={toggleCam} onDismissError={() => setCallError("")}
@@ -3327,7 +3394,7 @@ function Reports({ data }) {
 // ---------------------------------------------------------------------------
 // CallOverlay — native 1-to-1 WebRTC call UI (incoming / outgoing / active)
 // ---------------------------------------------------------------------------
-function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, localVideoRef, remoteVideoRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
+function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, sharingScreen, onToggleScreenShare, localVideoRef, remoteVideoRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
   if (callError) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.6)" }}>
@@ -3410,6 +3477,9 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
           </button>
           <button onClick={onToggleCam} disabled={!localHasVideo} className="w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30" style={{ background: camOn ? "#1E293B" : "#B42318", color: "white" }}>
             {camOn ? <Video size={18} /> : <VideoOff size={18} />}
+          </button>
+          <button onClick={onToggleScreenShare} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: sharingScreen ? GOLD : "#1E293B", color: "white" }} title={sharingScreen ? "Stop sharing screen" : "Share screen"}>
+            <ScreenShare size={18} />
           </button>
         </div>
       </div>

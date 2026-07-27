@@ -552,6 +552,7 @@ function App() {
   const [callError, setCallError] = useState("");
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteAudioRef = useRef(null);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const currentCallIdRef = useRef(null);
@@ -591,10 +592,6 @@ function App() {
 
   const createPeerConnection = (callIdForConn, role) => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    // fixed transceiver order (audio, then video) on both sides — lets us swap
-    // the video track later (e.g. for screen share) with no renegotiation needed
-    pc.addTransceiver("audio", { direction: "sendrecv" });
-    pc.addTransceiver("video", { direction: "sendrecv" });
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
       const field = role === "caller" ? "candidatesCaller" : "candidatesCallee";
@@ -602,14 +599,14 @@ function App() {
       fbSet(`shared/calls/${callIdForConn}/${field}/${myCandCountRef.current}`, e.candidate.toJSON());
     };
     pc.ontrack = (e) => {
-      if (remoteVideoRef.current) {
+      if (e.track.kind === "audio" && remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = e.streams[0];
+        remoteAudioRef.current.play().catch(() => {});
+      }
+      if (e.track.kind === "video" && remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = e.streams[0];
         remoteVideoRef.current.play().catch(() => {});
-      }
-      if (e.track.kind === "video") {
-        setRemoteHasVideo(!e.track.muted);
-        e.track.onunmute = () => setRemoteHasVideo(true);
-        e.track.onmute = () => setRemoteHasVideo(false);
+        setRemoteHasVideo(true);
       }
     };
     return pc;
@@ -627,11 +624,7 @@ function App() {
     }
     setLocalHasVideo(hasVideo);
     localStreamRef.current = stream;
-    const [audioTransceiver, videoTransceiver] = pc.getTransceivers();
-    const audioTrack = stream.getAudioTracks()[0];
-    const videoTrack = stream.getVideoTracks()[0];
-    if (audioTrack) await audioTransceiver.sender.replaceTrack(audioTrack);
-    if (videoTrack) await videoTransceiver.sender.replaceTrack(videoTrack);
+    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
       localVideoRef.current.play().catch(() => {});
@@ -752,49 +745,8 @@ function App() {
     setCamOn((s) => !s);
   };
 
-  const startScreenShare = async () => {
-    if (!pcRef.current) return;
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const screenTrack = screenStream.getVideoTracks()[0];
-      const [, videoTransceiver] = pcRef.current.getTransceivers();
-      cameraVideoTrackRef.current = videoTransceiver.sender.track; // remember to restore later (may be null)
-      await videoTransceiver.sender.replaceTrack(screenTrack);
-      screenStreamRef.current = screenStream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = screenStream;
-        localVideoRef.current.play().catch(() => {});
-      }
-      setLocalHasVideo(true);
-      setSharingScreen(true);
-      screenTrack.onended = () => stopScreenShare();
-    } catch (e) {
-      // user cancelled the share picker — no-op
-    }
-  };
-
-  const stopScreenShare = async () => {
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((t) => t.stop());
-      screenStreamRef.current = null;
-    }
-    setSharingScreen(false);
-    if (pcRef.current) {
-      const [, videoTransceiver] = pcRef.current.getTransceivers();
-      const camTrack = cameraVideoTrackRef.current;
-      try { await videoTransceiver.sender.replaceTrack(camTrack || null); } catch (e) {}
-      setLocalHasVideo(!!camTrack);
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-      localVideoRef.current.play().catch(() => {});
-    }
-  };
-
-  const toggleScreenShare = () => {
-    if (sharingScreen) stopScreenShare();
-    else startScreenShare();
-  };
+  // NOTE: screen sharing was removed for now — it needs proper WebRTC renegotiation
+  // to work reliably across browsers, which is a bigger, separate piece of work.
 
   // cross-browser-safe check for whether the remote video element is actually
   // rendering real frames — more reliable than track mute/unmute events, which
@@ -1086,6 +1038,19 @@ function App() {
     setIdentity(null);
   };
 
+  // security: if the admin removes this person from the team, kick them out
+  // immediately instead of letting their session keep working until they log out
+  useEffect(() => {
+    if (!data || !identity) return;
+    const stillExists = data.team.some(
+      (t) => t.id === identity.id || (identity.username && t.username === identity.username) || (identity.initials && t.initials === identity.initials)
+    );
+    if (!stillExists) {
+      showToast("Your account was removed from this team.");
+      logout();
+    }
+  }, [data && data.team, identity]);
+
   const shareDashboard = async () => {
     const url = window.location.href;
     try {
@@ -1153,8 +1118,7 @@ function App() {
       <CallOverlay
         incomingCall={incomingCall} callPhase={callPhase} callPeerName={callPeerName}
         callError={callError} micOn={micOn} camOn={camOn} localHasVideo={localHasVideo} remoteHasVideo={remoteHasVideo}
-        sharingScreen={sharingScreen} onToggleScreenShare={toggleScreenShare}
-        localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef}
+        localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef} remoteAudioRef={remoteAudioRef}
         onAccept={acceptIncomingCall} onDecline={declineIncomingCall} onHangUp={hangUpCall}
         onToggleMic={toggleMic} onToggleCam={toggleCam} onDismissError={() => setCallError("")}
       />
@@ -1965,6 +1929,13 @@ function computeMentions(text, team) {
 const ICE_SERVERS = [
   { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
 ];
+// finds a transceiver by media kind using the RECEIVER's track (always populated
+// with the correct kind once negotiated, unlike sender.track which can be null) —
+// safer than assuming a fixed array order across different browser implementations
+function getTransceiverByKind(pc, kind) {
+  const list = pc.getTransceivers();
+  return list.find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === kind) || list.find((t) => t.mid !== null && t.sender && t.sender.track && t.sender.track.kind === kind) || null;
+}
 function fbUrl(path) { return window.FIREBASE_DB_URL + "/" + path + ".json"; }
 async function fbSet(path, value) {
   await fetch(fbUrl(path), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
@@ -3412,7 +3383,7 @@ function Reports({ data }) {
 // ---------------------------------------------------------------------------
 // CallOverlay — native 1-to-1 WebRTC call UI (incoming / outgoing / active)
 // ---------------------------------------------------------------------------
-function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, sharingScreen, onToggleScreenShare, localVideoRef, remoteVideoRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
+function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, localVideoRef, remoteVideoRef, remoteAudioRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
   if (callError) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.6)" }}>
@@ -3467,6 +3438,7 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
   if (callPhase === "active") {
     return (
       <div className="fixed inset-0 z-[80] flex flex-col" style={{ background: "#0B1220" }}>
+        <audio ref={remoteAudioRef} autoPlay />
         <div className="flex-1 relative">
           <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" style={{ display: remoteHasVideo ? "block" : "none" }} />
           {!remoteHasVideo && (
@@ -3495,9 +3467,6 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
           </button>
           <button onClick={onToggleCam} disabled={!localHasVideo} className="w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30" style={{ background: camOn ? "#1E293B" : "#B42318", color: "white" }}>
             {camOn ? <Video size={18} /> : <VideoOff size={18} />}
-          </button>
-          <button onClick={onToggleScreenShare} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: sharingScreen ? GOLD : "#1E293B", color: "white" }} title={sharingScreen ? "Stop sharing screen" : "Share screen"}>
-            <ScreenShare size={18} />
           </button>
         </div>
       </div>

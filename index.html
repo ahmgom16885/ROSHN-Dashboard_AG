@@ -773,21 +773,45 @@ function App() {
 
   // on-screen diagnostics — so we can SEE what's actually happening in a call
   // without needing DevTools open
+  const lastAudioPacketsRef = useRef(0);
   useEffect(() => {
-    if (callPhase !== "active" && callPhase !== "outgoing") { setCallDiag(""); return; }
-    const iv = setInterval(() => {
+    if (callPhase !== "active" && callPhase !== "outgoing") { setCallDiag(""); lastAudioPacketsRef.current = 0; return; }
+    const iv = setInterval(async () => {
       const pc = pcRef.current;
       if (!pc) { setCallDiag("no peer connection yet"); return; }
       const localAudio = localStreamRef.current ? localStreamRef.current.getAudioTracks()[0] : null;
       const senders = pc.getSenders().map((s) => s.track ? `${s.track.kind}:${s.track.readyState}${s.track.enabled ? "" : ":disabled"}${s.track.muted ? ":muted" : ""}` : "no-track");
       const receivers = pc.getReceivers().map((r) => r.track ? `${r.track.kind}:${r.track.readyState}${r.track.muted ? ":muted" : ""}` : "no-track");
       const audioEl = remoteAudioRef;
+
+      // the definitive check: is real audio DATA actually arriving, not just a track object existing
+      let packetsLine = "stats: unavailable";
+      try {
+        const stats = await pc.getStats(null);
+        let found = null;
+        stats.forEach((report) => {
+          if (report.type === "inbound-rtp" && report.kind === "audio") found = report;
+        });
+        if (found) {
+          const packets = found.packetsReceived || 0;
+          const delta = packets - lastAudioPacketsRef.current;
+          lastAudioPacketsRef.current = packets;
+          const level = found.audioLevel !== undefined ? found.audioLevel.toFixed(3) : "n/a";
+          packetsLine = `audio packets in: ${packets} (+${delta}/s) | level: ${level}`;
+        } else {
+          packetsLine = "audio packets in: no inbound-rtp report yet";
+        }
+      } catch (e) {
+        packetsLine = "stats error: " + e.message;
+      }
+
       const lines = [
         `ICE: ${pc.iceConnectionState} | signaling: ${pc.signalingState}`,
         `local mic: ${localAudio ? (localAudio.enabled ? "enabled" : "disabled") + (localAudio.muted ? " muted" : "") : "none"}`,
         `senders: ${senders.join(", ") || "none"}`,
         `receivers: ${receivers.join(", ") || "none"}`,
         `audio el: ${audioEl && audioEl.current ? `paused=${audioEl.current.paused} muted=${audioEl.current.muted} vol=${audioEl.current.volume}` : "not mounted"}`,
+        packetsLine,
       ];
       setCallDiag(lines.join("\n"));
       const hasIncomingAudio = receivers.some((r) => r.startsWith("audio:live"));
@@ -3487,7 +3511,7 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
           )}
           <div className="absolute top-4 left-4 text-white text-sm font-medium bg-black/40 px-3 py-1.5 rounded-lg">{callPeerName}</div>
           {callDiag && (
-            <pre className="absolute top-4 right-4 text-white text-[9px] leading-tight bg-black/60 px-2 py-1.5 rounded-lg max-w-[220px] whitespace-pre-wrap font-mono">{callDiag}</pre>
+            <pre className="absolute top-4 right-4 text-white text-[9px] leading-tight bg-black/60 px-2 py-1.5 rounded-lg max-w-[260px] whitespace-pre-wrap font-mono">{callDiag}</pre>
           )}
           {audioBlocked && (
             <button onClick={onResumeAudio} className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: "rgba(0,0,0,0.75)" }}>

@@ -551,6 +551,7 @@ function App() {
   const cameraVideoTrackRef = useRef(null);
   const [callError, setCallError] = useState("");
   const [callDiag, setCallDiag] = useState("");
+  const [audioBlocked, setAudioBlocked] = useState(false);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
@@ -589,6 +590,7 @@ function App() {
     setLocalHasVideo(true);
     setRemoteHasVideo(false);
     setSharingScreen(false);
+    setAudioBlocked(false);
   };
 
   const createPeerConnection = (callIdForConn, role) => {
@@ -737,6 +739,12 @@ function App() {
     cleanupCall();
   };
 
+  const resumeRemoteAudio = () => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.play().then(() => setAudioBlocked(false)).catch(() => {});
+    }
+  };
+
   const toggleMic = () => {
     if (localStreamRef.current) localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = !micOn; });
     setMicOn((s) => !s);
@@ -782,6 +790,9 @@ function App() {
         `audio el: ${audioEl && audioEl.current ? `paused=${audioEl.current.paused} muted=${audioEl.current.muted} vol=${audioEl.current.volume}` : "not mounted"}`,
       ];
       setCallDiag(lines.join("\n"));
+      const hasIncomingAudio = receivers.some((r) => r.startsWith("audio:live"));
+      const isPaused = audioEl && audioEl.current && audioEl.current.paused;
+      setAudioBlocked(!!(hasIncomingAudio && isPaused));
     }, 1000);
     return () => clearInterval(iv);
   }, [callPhase]);
@@ -1142,7 +1153,7 @@ function App() {
       <CallOverlay
         incomingCall={incomingCall} callPhase={callPhase} callPeerName={callPeerName}
         callError={callError} micOn={micOn} camOn={camOn} localHasVideo={localHasVideo} remoteHasVideo={remoteHasVideo}
-        callDiag={callDiag}
+        callDiag={callDiag} audioBlocked={audioBlocked} onResumeAudio={resumeRemoteAudio}
         localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef} remoteAudioRef={remoteAudioRef}
         onAccept={acceptIncomingCall} onDecline={declineIncomingCall} onHangUp={hangUpCall}
         onToggleMic={toggleMic} onToggleCam={toggleCam} onDismissError={() => setCallError("")}
@@ -3408,7 +3419,7 @@ function Reports({ data }) {
 // ---------------------------------------------------------------------------
 // CallOverlay — native 1-to-1 WebRTC call UI (incoming / outgoing / active)
 // ---------------------------------------------------------------------------
-function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, callDiag, localVideoRef, remoteVideoRef, remoteAudioRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
+function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, callDiag, audioBlocked, onResumeAudio, localVideoRef, remoteVideoRef, remoteAudioRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
   if (callError) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.6)" }}>
@@ -3477,6 +3488,15 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
           <div className="absolute top-4 left-4 text-white text-sm font-medium bg-black/40 px-3 py-1.5 rounded-lg">{callPeerName}</div>
           {callDiag && (
             <pre className="absolute top-4 right-4 text-white text-[9px] leading-tight bg-black/60 px-2 py-1.5 rounded-lg max-w-[220px] whitespace-pre-wrap font-mono">{callDiag}</pre>
+          )}
+          {audioBlocked && (
+            <button onClick={onResumeAudio} className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: "rgba(0,0,0,0.75)" }}>
+              <div className="w-16 h-16 rounded-full flex items-center justify-center animate-pulse" style={{ background: GOLD }}>
+                <Volume2 size={26} className="text-white" />
+              </div>
+              <p className="text-white text-sm font-semibold">Tap to enable sound</p>
+              <p className="text-white/60 text-xs max-w-[220px] text-center">Your browser blocked audio from starting automatically</p>
+            </button>
           )}
           {localHasVideo ? (
             <video ref={localVideoRef} autoPlay playsInline muted className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 object-cover rounded-xl border-2 border-white/20" />

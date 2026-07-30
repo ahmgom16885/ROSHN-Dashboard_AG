@@ -4,6 +4,10 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
 <title>ROSHN Portfolio Dashboard</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#002E62" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/xlsx-js-style/dist/xlsx.bundle.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
@@ -15,6 +19,13 @@
     .print-area { padding: 0 !important; }
   }
 </style>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+</script>
 </head>
 <body>
 <div id="root">
@@ -167,6 +178,7 @@ const Mic = makeIcon(<><rect x="9" y="2" width="6" height="12" rx="3"/><path d="
 const MicOff = makeIcon(<><path d="M3 3l18 18"/><path d="M9 9v3a3 3 0 0 0 4.6 2.5"/><path d="M15 6a3 3 0 0 0-6 0v3"/><path d="M5 10a7 7 0 0 0 10.6 6"/><path d="M19 10a7 7 0 0 1-1 3.6"/><path d="M12 19v3"/></>);
 const VideoOff = makeIcon(<><path d="M3 3l18 18"/><path d="M16 8l5-3v14l-5-3"/><rect x="2" y="6" width="14" height="12" rx="2"/></>);
 const ScreenShare = makeIcon(<><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M12 8v5M9.5 10.5 12 8l2.5 2.5"/></>);
+const Bell = makeIcon(<><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></>);
 const FileIcon = makeIcon(<><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v5h5"/></>);
 const ImageIcon = makeIcon(<><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></>);
 const FileBarChart = makeIcon(<><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M9 17v-4M12.5 17v-7M16 17v-2"/></>);
@@ -245,6 +257,8 @@ const emptyState = () => ({
 // messages, project names) is never auto-translated.
 // ---------------------------------------------------------------------------
 const LANG_KEY = "roshn-dashboard-lang-v1";
+const NOTIF_KEY = "roshn-dashboard-notifications-v1";
+const MAX_NOTIFS = 50;
 
 // ---------------------------------------------------------------------------
 // Password recovery (EmailJS) — sends a 6-digit reset code to a person's
@@ -344,6 +358,8 @@ function App() {
   const [taskFilter, setTaskFilter] = useState({ project: "all", assignee: "all" });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [notifOpen, setNotifOpen] = useState(false);
   const [accessVerified, setAccessVerified] = useState(false);
   const [accessChecked, setAccessChecked] = useState(false);
   const [access, setAccess] = useState(undefined); // undefined = not loaded yet, null = no code set
@@ -353,6 +369,7 @@ function App() {
   const pollRef = useRef(null);
   const audioCtxRef = useRef(null);
   const seenMessageIdsRef = useRef(null); // null = not initialized yet (first load)
+  const seenTaskAssignRef = useRef(null); // null = not initialized yet (first load)
 
   useEffect(() => {
     (async () => {
@@ -371,6 +388,33 @@ function App() {
   };
   const t = (key) => (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.en[key] || key;
   const dir = lang === "ar" ? "rtl" : "ltr";
+
+  // ---- notification center (personal, per-device — never shared) ----
+  useEffect(() => {
+    if (!identity) return;
+    (async () => {
+      try {
+        const res = await window.storage.get(NOTIF_KEY, false);
+        if (res && res.value) setNotifications(JSON.parse(res.value));
+      } catch (e) {}
+    })();
+  }, [identity && identity.id]);
+
+  const persistNotifications = (next) => {
+    setNotifications(next);
+    window.storage.set(NOTIF_KEY, JSON.stringify(next), false).catch(() => {});
+  };
+  const pushNotification = (entry) => {
+    setNotifications((cur) => {
+      const next = [{ id: uid(), read: false, createdAt: now(), ...entry }, ...cur].slice(0, MAX_NOTIFS);
+      window.storage.set(NOTIF_KEY, JSON.stringify(next), false).catch(() => {});
+      return next;
+    });
+  };
+  const markAllNotificationsRead = () => {
+    persistNotifications(notifications.map((n) => ({ ...n, read: true })));
+  };
+  const unreadNotifCount = notifications.filter((n) => !n.read).length;
 
   const showToast = (msg) => {
     setToast(msg);
@@ -439,13 +483,43 @@ function App() {
     seenMessageIdsRef.current = ids;
     if (newOnes.length > 0) {
       playReceived();
-      const mentionMsg = newOnes.find((m) => m.mentions && m.mentions.includes(identity.id));
-      if (mentionMsg) {
-        const author = data.team.find((t) => t.id === mentionMsg.authorId);
-        showToast(`${author ? author.name : "Someone"} mentioned you`);
-      }
+      newOnes.forEach((m) => {
+        const author = data.team.find((t) => t.id === m.authorId);
+        const authorName = author ? author.name : "Someone";
+        const isMention = m.mentions && m.mentions.includes(identity.id);
+        const proj = m.projectId ? data.projects.find((p) => p.id === m.projectId) : null;
+        pushNotification({
+          type: isMention ? "mention" : "message",
+          text: isMention ? `${authorName} mentioned you` : `${authorName}: ${m.text || (m.attachment ? "sent a file" : "")}`,
+          channelLabel: proj ? `${proj.code} · ${proj.name}` : "General",
+        });
+        if (isMention) showToast(`${authorName} mentioned you`);
+      });
     }
   }, [data && data.messages, identity]);
+
+  // ---- notify when a task is newly assigned to you ----
+  useEffect(() => {
+    if (!data || !identity) return;
+    const currentMap = {};
+    data.tasks.forEach((tsk) => { currentMap[tsk.id] = tsk.assigneeId; });
+    if (seenTaskAssignRef.current === null) {
+      seenTaskAssignRef.current = currentMap;
+      return;
+    }
+    const prevMap = seenTaskAssignRef.current;
+    data.tasks.forEach((tsk) => {
+      if (tsk.assigneeId === identity.id && prevMap[tsk.id] !== identity.id) {
+        const proj = data.projects.find((p) => p.id === tsk.projectId);
+        pushNotification({
+          type: "task",
+          text: `You were assigned "${tsk.title}"`,
+          channelLabel: proj ? `${proj.code} · ${proj.name}` : "",
+        });
+      }
+    });
+    seenTaskAssignRef.current = currentMap;
+  }, [data && data.tasks, identity]);
 
   // ---- presence: heartbeat so others can see you're online ----
   useEffect(() => {
@@ -1160,7 +1234,15 @@ function App() {
     <LangContext.Provider value={langValue}>
     <div dir={dir} style={{ background: PAPER, minHeight: "100vh", color: INK }} className="font-sans">
       <TopBar identity={identity} saving={saving} onRefresh={() => loadData(false)} onOpenSettings={() => setShowSettings(true)}
-        soundOn={soundOn} onToggleSound={toggleSound} onLogout={logout} onShare={shareDashboard} />
+        soundOn={soundOn} onToggleSound={toggleSound} onLogout={logout} onShare={shareDashboard}
+        notifications={notifications} unreadNotifCount={unreadNotifCount} notifOpen={notifOpen} setNotifOpen={setNotifOpen}
+        onMarkAllRead={markAllNotificationsRead}
+        onOpenNotification={(n) => {
+          persistNotifications(notifications.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+          setTab(n.type === "task" ? "tasks" : "messages");
+          setNotifOpen(false);
+        }}
+      />
       {showActiveCallBanner && (
         <div className="sticky top-0 z-50 text-white px-4 py-2.5 flex items-center justify-between gap-3" style={{ background: TEAL }}>
           <div className="flex items-center gap-2 min-w-0">
@@ -1530,13 +1612,13 @@ function Avatar({ name, initials, size = 34 }) {
 // ---------------------------------------------------------------------------
 // Top bar + side nav
 // ---------------------------------------------------------------------------
-function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggleSound, onLogout, onShare }) {
+function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggleSound, onLogout, onShare, notifications, unreadNotifCount, notifOpen, setNotifOpen, onMarkAllRead, onOpenNotification }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { t, lang, toggleLang } = useLang();
   return (
     <div style={{ background: NAVY, borderBottom: `3px solid ${GOLD}` }} className="sticky top-0 z-40 no-print">
-      <div className="max-w-7xl mx-auto px-4 md:px-8 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="max-w-7xl mx-auto px-3 sm:px-8 py-3 flex items-center justify-between gap-2 overflow-x-auto">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <div className="w-9 h-9 rounded-md flex items-center justify-center font-bold text-sm shrink-0" style={{ background: GOLD, color: NAVY_DARK }}>
             RS
           </div>
@@ -1553,9 +1635,9 @@ function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggle
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-0.5 sm:gap-3 shrink-0">
           <span className="text-slate-300 text-xs hidden sm:inline">{saving ? t("saving") : t("synced")}</span>
-          <button onClick={toggleLang} className="text-slate-200 hover:text-white text-xs font-semibold px-2 py-1.5 rounded-md hover:bg-white/10 border border-white/20" title="Switch language">
+          <button onClick={toggleLang} className="text-slate-200 hover:text-white text-xs font-semibold px-2 py-1.5 rounded-md hover:bg-white/10 border border-white/20 shrink-0" title="Switch language">
             {lang === "en" ? "عربي" : "EN"}
           </button>
           <button onClick={onShare} className="text-slate-200 hover:text-white p-1.5 rounded-md hover:bg-white/10" title={t("shareLink")}>
@@ -1570,6 +1652,45 @@ function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggle
           <button onClick={onOpenSettings} className="text-slate-200 hover:text-white p-1.5 rounded-md hover:bg-white/10" title={t("settings")}>
             <SettingsIcon size={16} />
           </button>
+          <div className="relative">
+            <button onClick={() => setNotifOpen((s) => !s)} className="relative text-slate-200 hover:text-white p-1.5 rounded-md hover:bg-white/10" title="Notifications">
+              <Bell size={16} />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-0.5 rounded-full text-[9px] font-bold flex items-center justify-center text-white" style={{ background: "#B42318" }}>
+                  {unreadNotifCount > 9 ? "9+" : unreadNotifCount}
+                </span>
+              )}
+            </button>
+            {notifOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+                <div className="absolute right-0 top-10 bg-white rounded-lg shadow-xl border w-80 max-w-[85vw] z-50" style={{ borderColor: LINE }}>
+                  <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: LINE }}>
+                    <p className="text-xs font-semibold" style={{ color: NAVY }}>Notifications</p>
+                    {notifications.length > 0 && (
+                      <button onClick={onMarkAllRead} className="text-[11px] hover:underline" style={{ color: GOLD }}>Mark all read</button>
+                    )}
+                  </div>
+                  <div className="max-h-80 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <p className="text-xs text-slate-400 text-center py-8">No notifications yet</p>
+                    ) : (
+                      notifications.map((n) => (
+                        <button key={n.id} onClick={() => onOpenNotification(n)}
+                          className="w-full text-left px-3 py-2.5 border-b hover:bg-slate-50 flex gap-2 items-start" style={{ borderColor: LINE }}>
+                          <span className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0" style={{ background: n.read ? "transparent" : GOLD }} />
+                          <div className="min-w-0 flex-1">
+                            <p className={`text-xs ${n.read ? "text-slate-500" : "text-slate-800 font-medium"} truncate`}>{n.text}</p>
+                            <p className="text-[10px] text-slate-400">{n.channelLabel}{n.channelLabel ? " · " : ""}{fmtDateTime(n.createdAt)}</p>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <div className="relative pl-3 border-l border-white/20">
             <button onClick={() => setMenuOpen((s) => !s)} className="flex items-center gap-2">
               <Avatar name={identity.name} initials={identity.initials} size={30} />

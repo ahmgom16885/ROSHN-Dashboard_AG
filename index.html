@@ -1617,8 +1617,8 @@ function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggle
   const { t, lang, toggleLang } = useLang();
   return (
     <div style={{ background: NAVY, borderBottom: `3px solid ${GOLD}` }} className="sticky top-0 z-40 no-print">
-      <div className="max-w-7xl mx-auto px-3 sm:px-8 py-3 flex items-center justify-between gap-2 overflow-x-auto">
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+      <div className="max-w-7xl mx-auto px-3 sm:px-8 py-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <div className="w-9 h-9 rounded-md flex items-center justify-center font-bold text-sm shrink-0" style={{ background: GOLD, color: NAVY_DARK }}>
             RS
           </div>

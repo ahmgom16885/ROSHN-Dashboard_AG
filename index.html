@@ -370,6 +370,16 @@ function App() {
   const audioCtxRef = useRef(null);
   const seenMessageIdsRef = useRef(null); // null = not initialized yet (first load)
   const seenTaskAssignRef = useRef(null); // null = not initialized yet (first load)
+  const notifiedOverdueRef = useRef(new Set());
+
+  // reset "already seen" tracking whenever who's logged in changes (login, logout,
+  // or switching accounts in the same browser) — otherwise a message sent while
+  // logged in as someone else gets wrongly marked "seen" for the next account too
+  useEffect(() => {
+    seenMessageIdsRef.current = null;
+    seenTaskAssignRef.current = null;
+    notifiedOverdueRef.current = new Set();
+  }, [identity && identity.id]);
 
   useEffect(() => {
     (async () => {
@@ -519,6 +529,23 @@ function App() {
       }
     });
     seenTaskAssignRef.current = currentMap;
+  }, [data && data.tasks, identity]);
+
+  // ---- notify when one of your tasks is overdue (once per task per session) ----
+  useEffect(() => {
+    if (!data || !identity) return;
+    data.tasks.forEach((tsk) => {
+      const isOverdue = tsk.dueDate && tsk.status !== "done" && new Date(tsk.dueDate) < new Date();
+      if (tsk.assigneeId === identity.id && isOverdue && !notifiedOverdueRef.current.has(tsk.id)) {
+        notifiedOverdueRef.current.add(tsk.id);
+        const proj = data.projects.find((p) => p.id === tsk.projectId);
+        pushNotification({
+          type: "overdue",
+          text: `"${tsk.title}" is overdue`,
+          channelLabel: proj ? `${proj.code} · ${proj.name}` : "",
+        });
+      }
+    });
   }, [data && data.tasks, identity]);
 
   // ---- presence: heartbeat so others can see you're online ----
@@ -1986,6 +2013,29 @@ function Overview({ data, identity, presence, goTasks }) {
         <StatCard label={t("teamMembers")} value={team.length} icon={Users} />
       </div>
 
+      {projects.length > 0 && (
+        <div className="bg-white rounded-xl border p-4" style={{ borderColor: LINE }}>
+          <h2 className="text-sm font-semibold mb-3" style={{ color: NAVY }}>Portfolio Health</h2>
+          <div className="flex flex-wrap gap-2">
+            {["healthy", "attention", "critical"].map((level) => {
+              const count = projects.filter((p) => projectHealth(p, tasks).level === level).length;
+              const meta = { healthy: { label: "Healthy", color: "#006450" }, attention: { label: "Needs Attention", color: "#ED8001" }, critical: { label: "Critical", color: "#B42318" } }[level];
+              return (
+                <button key={level} onClick={() => goTasks()} className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg" style={{ background: meta.color + "14", color: meta.color }}>
+                  <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
+                  {count} {meta.label}
+                </button>
+              );
+            })}
+            {projects.filter((p) => projectHealth(p, tasks).level === "none").length > 0 && (
+              <span className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg text-slate-400" style={{ background: PAPER }}>
+                {projects.filter((p) => projectHealth(p, tasks).level === "none").length} No data yet
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="grid md:grid-cols-2 gap-5">
         <div className="bg-white rounded-xl border p-4" style={{ borderColor: LINE }}>
           <h2 className="text-sm font-semibold mb-3" style={{ color: NAVY }}>{t("projectProgress")}</h2>
@@ -2069,6 +2119,20 @@ function EmptyHint({ text }) {
   return <p className="text-xs text-slate-400 py-6 text-center">{text}</p>;
 }
 
+function projectHealth(project, tasks) {
+  const pTasks = tasks.filter((t) => t.projectId === project.id);
+  if (pTasks.length === 0) return { level: "none", label: "No data yet", color: "#94A3B8", dot: "#CBD5E1" };
+  const openTasks = pTasks.filter((t) => t.status !== "done");
+  const overdue = pTasks.filter((t) => t.dueDate && t.status !== "done" && new Date(t.dueDate) < new Date());
+  const overdueRatio = openTasks.length ? overdue.length / openTasks.length : 0;
+  if (overdue.length >= 3 || overdueRatio > 0.4) {
+    return { level: "critical", label: "Critical", color: "#B42318", dot: "#B42318" };
+  }
+  if (overdue.length > 0) {
+    return { level: "attention", label: "Needs Attention", color: "#B5730A", dot: "#ED8001" };
+  }
+  return { level: "healthy", label: "Healthy", color: "#006450", dot: "#006450" };
+}
 function projectLabel(projects, id) {
   const p = projects.find((p) => p.id === id);
   return p ? `${p.code} · ${p.name}` : "—";
@@ -2193,15 +2257,24 @@ function Projects({ data, persist, goTasks, identity }) {
           const pDone = pTasks.filter((t) => t.status === "done").length;
           const pct = pTasks.length ? Math.round((pDone / pTasks.length) * 100) : 0;
           const memberIds = p.memberIds || [];
+          const health = projectHealth(p, tasks);
           return (
             <div key={p.id} className="bg-white rounded-xl border p-4 flex flex-col" style={{ borderColor: LINE }}>
               <div className="flex items-start justify-between">
-                <span
-                  className="text-[11px] font-mono font-bold px-2 py-1 rounded border"
-                  style={{ color: NAVY, borderColor: NAVY }}
-                >
-                  {p.code}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="text-[11px] font-mono font-bold px-2 py-1 rounded border"
+                    style={{ color: NAVY, borderColor: NAVY }}
+                  >
+                    {p.code}
+                  </span>
+                  {health.level !== "none" && (
+                    <span className="flex items-center gap-1 text-[10px] font-medium px-1.5 py-1 rounded-full" style={{ background: health.color + "1A", color: health.color }} title={health.label}>
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: health.dot }} />
+                      {health.label}
+                    </span>
+                  )}
+                </div>
                 {isAdmin && (
                   <button onClick={() => removeProject(p.id)} className="text-slate-300 hover:text-red-500">
                     <Trash2 size={14} />
@@ -3344,6 +3417,7 @@ function Reports({ data }) {
     return {
       code: p.code, name: p.name, total: pTasks.length, done,
       pct: pTasks.length ? Math.round((done / pTasks.length) * 100) : 0, overdue,
+      health: projectHealth(p, tasks),
     };
   });
 
@@ -3410,9 +3484,11 @@ function Reports({ data }) {
 
     const projectStyledRows = projectRows.map((r, i) => {
       const alt = i % 2 === 1;
+      const healthStyle = r.health.level === "critical" ? redStyle(alt) : r.health.level === "attention" ? { ...bodyStyle(alt), font: { bold: true, color: { rgb: "FFB5730A" } } } : r.health.level === "healthy" ? tealStyle(alt) : bodyStyle(alt);
       return [
         cell(r.code, bodyStyle(alt)),
         cell(r.name, bodyStyle(alt)),
+        cell(r.health.level === "none" ? "—" : r.health.label, healthStyle),
         cell(r.total, rightStyle(alt)),
         cell(r.done, rightStyle(alt)),
         cell(r.pct + "%", r.pct === 100 ? tealStyle(alt) : rightStyle(alt)),
@@ -3421,8 +3497,8 @@ function Reports({ data }) {
     });
     const wsProjects = buildSheet(
       "ROSHN Portfolio Report — Project Progress",
-      ["Code", "Project", "Total Tasks", "Done", "% Complete", "Overdue"],
-      projectStyledRows, [10, 42, 12, 10, 12, 10]
+      ["Code", "Project", "Health", "Total Tasks", "Done", "% Complete", "Overdue"],
+      projectStyledRows, [10, 42, 14, 12, 10, 12, 10]
     );
     X.utils.book_append_sheet(wb, wsProjects, "Projects");
 
@@ -3493,6 +3569,7 @@ function Reports({ data }) {
           <thead>
             <tr className="text-left text-slate-400 border-b" style={{ borderColor: LINE }}>
               <th className="py-1.5 font-medium">Code</th><th className="font-medium">Project</th>
+              <th className="font-medium">Health</th>
               <th className="font-medium text-right">Tasks</th><th className="font-medium text-right">Done</th>
               <th className="font-medium text-right">%</th><th className="font-medium text-right">Overdue</th>
             </tr>
@@ -3501,6 +3578,14 @@ function Reports({ data }) {
             {projectRows.map((r, i) => (
               <tr key={i} className="border-b" style={{ borderColor: LINE }}>
                 <td className="py-1.5 font-mono">{r.code}</td><td>{r.name}</td>
+                <td>
+                  {r.health.level !== "none" && (
+                    <span className="flex items-center gap-1" style={{ color: r.health.color }}>
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: r.health.dot }} />
+                      {r.health.label}
+                    </span>
+                  )}
+                </td>
                 <td className="text-right">{r.total}</td><td className="text-right">{r.done}</td>
                 <td className="text-right font-medium" style={{ color: r.pct === 100 ? TEAL : INK }}>{r.pct}%</td>
                 <td className="text-right" style={{ color: r.overdue > 0 ? "#B42318" : INK }}>{r.overdue}</td>

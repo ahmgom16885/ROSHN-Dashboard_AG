@@ -258,6 +258,9 @@ const emptyState = () => ({
 // ---------------------------------------------------------------------------
 const LANG_KEY = "roshn-dashboard-lang-v1";
 const NOTIF_KEY = "roshn-dashboard-notifications-v1";
+const LASTSEEN_KEY = "roshn-dashboard-lastseen-v1";
+const NOTIF_CHECKPOINT_KEY = "roshn-dashboard-notif-checkpoint-v1"; // last time messages were checked (ISO timestamp)
+const NOTIF_EVENT_IDS_KEY = "roshn-dashboard-notif-eventids-v1"; // already-notified task assignment/overdue events
 const MAX_NOTIFS = 50;
 
 // ---------------------------------------------------------------------------
@@ -368,17 +371,50 @@ function App() {
   const [lang, setLang] = useState("en");
   const pollRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const seenMessageIdsRef = useRef(null); // null = not initialized yet (first load)
-  const seenTaskAssignRef = useRef(null); // null = not initialized yet (first load)
-  const notifiedOverdueRef = useRef(new Set());
+  const notifCheckpointRef = useRef(null); // ISO timestamp string, null = not loaded yet
+  const notifiedEventIdsRef = useRef(null); // Set of already-notified assign/overdue keys, null = not loaded yet
 
-  // reset "already seen" tracking whenever who's logged in changes (login, logout,
-  // or switching accounts in the same browser) — otherwise a message sent while
-  // logged in as someone else gets wrongly marked "seen" for the next account too
+  // load persisted notification checkpoint + event-id set whenever who's logged in
+  // changes — these persist across refreshes and re-opening the app, unlike the
+  // old in-memory-only tracking, so notifications correctly "catch up" on
+  // anything that happened while this device was closed
   useEffect(() => {
-    seenMessageIdsRef.current = null;
-    seenTaskAssignRef.current = null;
-    notifiedOverdueRef.current = new Set();
+    notifCheckpointRef.current = null;
+    notifiedEventIdsRef.current = null;
+    if (!identity) return;
+    (async () => {
+      let checkpoint = null;
+      try {
+        const res = await window.storage.get(NOTIF_CHECKPOINT_KEY, false);
+        checkpoint = res && res.value ? res.value : null;
+      } catch (e) {}
+      if (!checkpoint) {
+        checkpoint = now();
+        window.storage.set(NOTIF_CHECKPOINT_KEY, checkpoint, false).catch(() => {});
+      }
+      notifCheckpointRef.current = checkpoint;
+
+      let eventIds = null;
+      try {
+        const res = await window.storage.get(NOTIF_EVENT_IDS_KEY, false);
+        eventIds = res && res.value ? JSON.parse(res.value) : null;
+      } catch (e) {}
+      if (eventIds === null) {
+        // first time ever — seed silently from current state so we don't flood
+        // with notifications for assignments/overdue tasks that already existed
+        eventIds = [];
+        if (data) {
+          data.tasks.forEach((tsk) => {
+            if (tsk.assigneeId !== identity.id) return;
+            eventIds.push(`assign:${tsk.id}:${tsk.assigneeId}`);
+            const isOverdue = tsk.dueDate && tsk.status !== "done" && new Date(tsk.dueDate) < new Date();
+            if (isOverdue) eventIds.push(`overdue:${tsk.id}`);
+          });
+        }
+        window.storage.set(NOTIF_EVENT_IDS_KEY, JSON.stringify(eventIds), false).catch(() => {});
+      }
+      notifiedEventIdsRef.current = new Set(eventIds);
+    })();
   }, [identity && identity.id]);
 
   useEffect(() => {
@@ -480,72 +516,57 @@ function App() {
     });
   };
 
-  // ---- play a notification tone when a NEW message from someone else arrives ----
+  // ---- notify about messages that arrived since the last checkpoint — persisted,
+  // so this correctly "catches up" even if the app was closed when they arrived ----
   useEffect(() => {
-    if (!data || !identity) return;
-    const ids = new Set(data.messages.map((m) => m.id));
-    if (seenMessageIdsRef.current === null) {
-      // first load — just remember what's already there, don't play anything
-      seenMessageIdsRef.current = ids;
-      return;
-    }
-    const newOnes = data.messages.filter((m) => !seenMessageIdsRef.current.has(m.id) && m.authorId !== identity.id);
-    seenMessageIdsRef.current = ids;
-    if (newOnes.length > 0) {
-      playReceived();
-      newOnes.forEach((m) => {
-        const author = data.team.find((t) => t.id === m.authorId);
-        const authorName = author ? author.name : "Someone";
-        const isMention = m.mentions && m.mentions.includes(identity.id);
-        const proj = m.projectId ? data.projects.find((p) => p.id === m.projectId) : null;
-        pushNotification({
-          type: isMention ? "mention" : "message",
-          text: isMention ? `${authorName} mentioned you` : `${authorName}: ${m.text || (m.attachment ? "sent a file" : "")}`,
-          channelLabel: proj ? `${proj.code} · ${proj.name}` : "General",
-        });
-        if (isMention) showToast(`${authorName} mentioned you`);
+    if (!data || !identity || !notifCheckpointRef.current) return;
+    const checkpointTime = new Date(notifCheckpointRef.current).getTime();
+    const newOnes = data.messages.filter((m) => m.authorId !== identity.id && new Date(m.createdAt).getTime() > checkpointTime);
+    if (newOnes.length === 0) return;
+    playReceived();
+    newOnes.forEach((m) => {
+      const author = data.team.find((t) => t.id === m.authorId);
+      const authorName = author ? author.name : "Someone";
+      const isMention = m.mentions && m.mentions.includes(identity.id);
+      const proj = m.projectId ? data.projects.find((p) => p.id === m.projectId) : null;
+      pushNotification({
+        type: isMention ? "mention" : "message",
+        text: isMention ? `${authorName} mentioned you` : `${authorName}: ${m.text || (m.attachment ? "sent a file" : "")}`,
+        channelLabel: proj ? `${proj.code} · ${proj.name}` : "General",
       });
-    }
+      if (isMention) showToast(`${authorName} mentioned you`);
+    });
+    const maxTime = Math.max(checkpointTime, ...newOnes.map((m) => new Date(m.createdAt).getTime()));
+    const newCheckpoint = new Date(maxTime + 1).toISOString();
+    notifCheckpointRef.current = newCheckpoint;
+    window.storage.set(NOTIF_CHECKPOINT_KEY, newCheckpoint, false).catch(() => {});
   }, [data && data.messages, identity]);
 
-  // ---- notify when a task is newly assigned to you ----
+  // ---- notify about task assignment + overdue tasks — persisted per-event so
+  // each one only ever notifies once, and catches up correctly after being away ----
   useEffect(() => {
-    if (!data || !identity) return;
-    const currentMap = {};
-    data.tasks.forEach((tsk) => { currentMap[tsk.id] = tsk.assigneeId; });
-    if (seenTaskAssignRef.current === null) {
-      seenTaskAssignRef.current = currentMap;
-      return;
-    }
-    const prevMap = seenTaskAssignRef.current;
+    if (!data || !identity || !notifiedEventIdsRef.current) return;
+    let changed = false;
     data.tasks.forEach((tsk) => {
-      if (tsk.assigneeId === identity.id && prevMap[tsk.id] !== identity.id) {
-        const proj = data.projects.find((p) => p.id === tsk.projectId);
-        pushNotification({
-          type: "task",
-          text: `You were assigned "${tsk.title}"`,
-          channelLabel: proj ? `${proj.code} · ${proj.name}` : "",
-        });
+      if (tsk.assigneeId !== identity.id) return;
+      const proj = data.projects.find((p) => p.id === tsk.projectId);
+      const assignKey = `assign:${tsk.id}:${tsk.assigneeId}`;
+      if (!notifiedEventIdsRef.current.has(assignKey)) {
+        notifiedEventIdsRef.current.add(assignKey);
+        changed = true;
+        pushNotification({ type: "task", text: `You were assigned "${tsk.title}"`, channelLabel: proj ? `${proj.code} · ${proj.name}` : "" });
       }
-    });
-    seenTaskAssignRef.current = currentMap;
-  }, [data && data.tasks, identity]);
-
-  // ---- notify when one of your tasks is overdue (once per task per session) ----
-  useEffect(() => {
-    if (!data || !identity) return;
-    data.tasks.forEach((tsk) => {
       const isOverdue = tsk.dueDate && tsk.status !== "done" && new Date(tsk.dueDate) < new Date();
-      if (tsk.assigneeId === identity.id && isOverdue && !notifiedOverdueRef.current.has(tsk.id)) {
-        notifiedOverdueRef.current.add(tsk.id);
-        const proj = data.projects.find((p) => p.id === tsk.projectId);
-        pushNotification({
-          type: "overdue",
-          text: `"${tsk.title}" is overdue`,
-          channelLabel: proj ? `${proj.code} · ${proj.name}` : "",
-        });
+      const overdueKey = `overdue:${tsk.id}`;
+      if (isOverdue && !notifiedEventIdsRef.current.has(overdueKey)) {
+        notifiedEventIdsRef.current.add(overdueKey);
+        changed = true;
+        pushNotification({ type: "overdue", text: `"${tsk.title}" is overdue`, channelLabel: proj ? `${proj.code} · ${proj.name}` : "" });
       }
     });
+    if (changed) {
+      window.storage.set(NOTIF_EVENT_IDS_KEY, JSON.stringify(Array.from(notifiedEventIdsRef.current)), false).catch(() => {});
+    }
   }, [data && data.tasks, identity]);
 
   // ---- presence: heartbeat so others can see you're online ----

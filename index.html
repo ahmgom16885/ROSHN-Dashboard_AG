@@ -70,7 +70,10 @@
         return Promise.resolve(raw === null ? null : { key: key, value: raw, shared: false });
       }
       return fetch(fbUrl(key), { headers: appCheckHeaders() })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          if (!r.ok) { throw new Error("Firebase read failed (" + r.status + ")"); }
+          return r.json();
+        })
         .then(function (data) {
           if (data === null || data === undefined) return null;
           return { key: key, value: data, shared: true };
@@ -1051,6 +1054,7 @@ function App() {
   // ---- load + poll shared data ----
   const loadData = useCallback(async (silent) => {
     try {
+      await waitForAppCheckToken();
       const res = await window.storage.get(DATA_KEY, true);
       if (res && res.value) {
         setData(JSON.parse(res.value));
@@ -1157,6 +1161,7 @@ function App() {
     setIdentity(person);
     let base = null;
     try {
+      await waitForAppCheckToken();
       const res = await window.storage.get(DATA_KEY, true);
       base = res && res.value ? JSON.parse(res.value) : null;
     } catch (e) {}
@@ -1169,6 +1174,7 @@ function App() {
   const login = async (identifier, password) => {
     let base = null;
     try {
+      await waitForAppCheckToken();
       const res = await window.storage.get(DATA_KEY, true);
       base = res && res.value ? JSON.parse(res.value) : null;
     } catch (e) {}
@@ -1192,6 +1198,7 @@ function App() {
   const requestPasswordReset = async (identifier) => {
     let base = null;
     try {
+      await waitForAppCheckToken();
       const res = await window.storage.get(DATA_KEY, true);
       base = res && res.value ? JSON.parse(res.value) : null;
     } catch (e) {}
@@ -1221,6 +1228,7 @@ function App() {
   const confirmPasswordReset = async (identifier, code, newPassword) => {
     let base = null;
     try {
+      await waitForAppCheckToken();
       const res = await window.storage.get(DATA_KEY, true);
       base = res && res.value ? JSON.parse(res.value) : null;
     } catch (e) {}

@@ -59,6 +59,9 @@
   function fbUrl(key) {
     return FIREBASE_DB_URL + "/shared/" + encodeURIComponent(key) + ".json";
   }
+  function appCheckHeaders() {
+    return window.__appCheckToken ? { "X-Firebase-AppCheck": window.__appCheckToken } : {};
+  }
 
   window.storage = {
     get: function (key, shared) {
@@ -66,7 +69,7 @@
         var raw = localStorage.getItem(localKey(key));
         return Promise.resolve(raw === null ? null : { key: key, value: raw, shared: false });
       }
-      return fetch(fbUrl(key))
+      return fetch(fbUrl(key), { headers: appCheckHeaders() })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (data === null || data === undefined) return null;
@@ -78,9 +81,12 @@
         localStorage.setItem(localKey(key), value);
         return Promise.resolve({ key: key, value: value, shared: false });
       }
+      var headers = { "Content-Type": "application/json" };
+      var ackHeaders = appCheckHeaders();
+      for (var k in ackHeaders) headers[k] = ackHeaders[k];
       return fetch(fbUrl(key), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: headers,
         body: JSON.stringify(value),
       }).then(function () {
         return { key: key, value: value, shared: true };
@@ -91,7 +97,7 @@
         localStorage.removeItem(localKey(key));
         return Promise.resolve({ key: key, deleted: true, shared: false });
       }
-      return fetch(fbUrl(key), { method: "DELETE" }).then(function () {
+      return fetch(fbUrl(key), { method: "DELETE", headers: appCheckHeaders() }).then(function () {
         return { key: key, deleted: true, shared: true };
       });
     },
@@ -115,6 +121,45 @@ window.addEventListener("error", function (e) {
       "error text from here: " + (e.message || "unknown error") + "</div>";
   }
 });
+</script>
+
+<!-- App Check: verifies requests actually come from this app before they reach
+     the database. Loaded as separate compat SDKs since the rest of the app
+     talks to Firebase over plain REST, not the JS SDK. -->
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-check-compat.js"></script>
+<script>
+(function () {
+  var FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDF0Zwb1TG-lY-sa6fo4O05YVy7PcPi3g0",
+    authDomain: "roshn-projects--dashboard.firebaseapp.com",
+    databaseURL: "https://roshn-projects--dashboard-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "roshn-projects--dashboard",
+    storageBucket: "roshn-projects--dashboard.firebasestorage.app",
+    messagingSenderId: "748543855833",
+    appId: "1:748543855833:web:d7afc90d8477994c6682c8",
+  };
+  var RECAPTCHA_SITE_KEY = "6LeCBXAtAAAAAObndvD6dnogQ0A9v9UfQIb3SRav";
+
+  try {
+    if (!window.firebase) return; // SDK failed to load (e.g. offline) — app still works, just without App Check headers
+    var app = firebase.initializeApp(FIREBASE_CONFIG);
+    var appCheck = firebase.appCheck(app);
+    appCheck.activate(new firebase.appCheck.ReCaptchaV3Provider(RECAPTCHA_SITE_KEY), true);
+
+    var refreshToken = function () {
+      appCheck.getToken().then(function (result) {
+        window.__appCheckToken = result.token;
+      }).catch(function (e) {
+        console.error("App Check token error:", e);
+      });
+    };
+    refreshToken();
+    setInterval(refreshToken, 20 * 60 * 1000); // App Check tokens expire — refresh well before that
+  } catch (e) {
+    console.error("App Check setup failed:", e);
+  }
+})();
 </script>
 
 <script type="text/babel" data-presets="react">
@@ -573,11 +618,7 @@ function App() {
   useEffect(() => {
     if (!identity || !window.FIREBASE_DB_URL) return;
     const beat = () => {
-      fetch(window.FIREBASE_DB_URL + "/shared/presence/" + identity.id + ".json", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(new Date().toISOString()),
-      }).catch(() => {});
+      fbSet("shared/presence/" + identity.id, new Date().toISOString()).catch(() => {});
     };
     beat();
     const t = setInterval(beat, 25000);
@@ -588,10 +629,7 @@ function App() {
   useEffect(() => {
     if (!window.FIREBASE_DB_URL) return;
     const load = () => {
-      fetch(window.FIREBASE_DB_URL + "/shared/presence.json")
-        .then((r) => r.json())
-        .then((d) => setPresence(d || {}))
-        .catch(() => {});
+      fbGet("shared/presence").then((d) => setPresence(d || {}));
     };
     load();
     const t = setInterval(load, 20000);
@@ -1162,11 +1200,7 @@ function App() {
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expiresAt = Date.now() + 15 * 60 * 1000;
     try {
-      await fetch(window.FIREBASE_DB_URL + "/shared/passwordResets/" + member.id + ".json", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, expiresAt }),
-      });
+      await fbSet("shared/passwordResets/" + member.id, { code, expiresAt });
       if (window.emailjs) {
         await window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
           to_email: member.recoveryEmail, to_name: member.name, code: code,
@@ -1191,19 +1225,13 @@ function App() {
     );
     if (!member) return false;
 
-    let record = null;
-    try {
-      const res = await fetch(window.FIREBASE_DB_URL + "/shared/passwordResets/" + member.id + ".json");
-      record = await res.json();
-    } catch (e) {}
+    const record = await fbGet("shared/passwordResets/" + member.id);
     if (!record || record.code !== code.trim() || Date.now() > record.expiresAt) return false;
 
     const nextTeam = base.team.map((t) => (t.id === member.id ? { ...t, password: newPassword } : t));
     const next = { ...base, team: nextTeam };
     await persist(next);
-    try {
-      await fetch(window.FIREBASE_DB_URL + "/shared/passwordResets/" + member.id + ".json", { method: "DELETE" });
-    } catch (e) {}
+    await fbDelete("shared/passwordResets/" + member.id);
     const updatedMember = { ...member, password: newPassword };
     try {
       await window.storage.set(IDENTITY_KEY, JSON.stringify(updatedMember), false);
@@ -2203,29 +2231,45 @@ function getTransceiverByKind(pc, kind) {
   return list.find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === kind) || list.find((t) => t.mid !== null && t.sender && t.sender.track && t.sender.track.kind === kind) || null;
 }
 function fbUrl(path) { return window.FIREBASE_DB_URL + "/" + path + ".json"; }
+// App Check token gets set on window.__appCheckToken once the App Check SDK
+// initializes (added separately) — until then this just contributes no header,
+// so everything keeps working exactly as before while that piece is wired in.
+function appCheckHeaders() {
+  return window.__appCheckToken ? { "X-Firebase-AppCheck": window.__appCheckToken } : {};
+}
 async function fbSet(path, value) {
-  await fetch(fbUrl(path), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
+  await fetch(fbUrl(path), { method: "PUT", headers: { "Content-Type": "application/json", ...appCheckHeaders() }, body: JSON.stringify(value) });
 }
 async function fbGet(path) {
   try {
-    const res = await fetch(fbUrl(path));
+    const res = await fetch(fbUrl(path), { headers: { ...appCheckHeaders() } });
     return await res.json();
   } catch (e) { return null; }
 }
 async function fbDelete(path) {
-  try { await fetch(fbUrl(path), { method: "DELETE" }); } catch (e) {}
+  try { await fetch(fbUrl(path), { method: "DELETE", headers: { ...appCheckHeaders() } }); } catch (e) {}
 }
-// listens for ANY change under `path` and calls onChange() (no payload — caller re-fetches
-// the authoritative current state with fbGet, simpler and more robust than parsing SSE diffs)
-function fbListen(path, onChange) {
-  let es;
-  try {
-    es = new EventSource(fbUrl(path));
-    es.addEventListener("put", onChange);
-    es.addEventListener("patch", onChange);
-    es.onerror = () => {}; // browser auto-reconnects
-  } catch (e) {}
-  return { close: () => { try { es && es.close(); } catch (e) {} } };
+// polls `path` and calls onChange() whenever the value changes — replaces an
+// earlier EventSource-based version. EventSource can't carry custom headers,
+// which App Check's security token requires, so this switches to plain fetch
+// (which can) at a short interval instead. Same onChange()-then-refetch contract.
+function fbListen(path, onChange, intervalMs) {
+  let stopped = false;
+  let lastSnapshot;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const val = await fbGet(path);
+      const snap = JSON.stringify(val);
+      if (snap !== lastSnapshot) {
+        lastSnapshot = snap;
+        onChange();
+      }
+    } catch (e) {}
+    if (!stopped) setTimeout(tick, intervalMs || 700);
+  };
+  tick();
+  return { close: () => { stopped = true; } };
 }
 
 // ---------------------------------------------------------------------------
@@ -2420,7 +2464,7 @@ function Tasks({ data, persist, identity, filter, setFilter }) {
     persist({ ...data, tasks: next });
     setOpenTask((cur) => cur ? { ...cur, attachments: (cur.attachments || []).filter((a) => a.id !== attachmentId) } : cur);
     if (window.FIREBASE_DB_URL) {
-      fetch(window.FIREBASE_DB_URL + "/shared/files/" + attachmentId + ".json", { method: "DELETE" }).catch(() => {});
+      fbDelete("shared/files/" + attachmentId).catch(() => {});
     }
   };
   const deleteTask = (id) => {
@@ -2629,11 +2673,7 @@ function TaskDetail({ task, project, team, identity, isAdmin, onClose, onUpdate,
     reader.onload = () => {
       const dataUrl = reader.result;
       const fileId = uid();
-      fetch(window.FIREBASE_DB_URL + "/shared/files/" + fileId + ".json", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(dataUrl),
-      })
+      fbSet("shared/files/" + fileId, dataUrl)
         .then(() => {
           onAddAttachment(task.id, {
             id: fileId, name: file.name, mimeType: file.type || "application/octet-stream",
@@ -2650,8 +2690,7 @@ function TaskDetail({ task, project, team, identity, isAdmin, onClose, onUpdate,
   const openAttachment = async (att, download) => {
     setBusyAttachmentId(att.id);
     try {
-      const res = await fetch(window.FIREBASE_DB_URL + "/shared/files/" + att.id + ".json");
-      const dataUrl = await res.json();
+      const dataUrl = await fbGet("shared/files/" + att.id);
       const blobUrl = dataUrlToBlobUrl(dataUrl);
       if (download) {
         const a = document.createElement("a");
@@ -3039,8 +3078,7 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
     const toLoad = filtered.filter((m) => m.attachment && m.attachment.mimeType && m.attachment.mimeType.startsWith("image/") && !imgCache[m.attachment.id]);
     if (toLoad.length === 0) return;
     toLoad.forEach((m) => {
-      fetch(window.FIREBASE_DB_URL + "/shared/files/" + m.attachment.id + ".json")
-        .then((r) => r.json())
+      fbGet("shared/files/" + m.attachment.id)
         .then((dataUrl) => setImgCache((cur) => ({ ...cur, [m.attachment.id]: dataUrl })))
         .catch(() => {});
     });
@@ -3104,11 +3142,7 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
     reader.onload = () => {
       const dataUrl = reader.result;
       const fileId = uid();
-      fetch(window.FIREBASE_DB_URL + "/shared/files/" + fileId + ".json", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(dataUrl),
-      })
+      fbSet("shared/files/" + fileId, dataUrl)
         .then(() => {
           const mentions = computeMentions(text.trim(), team);
           const msg = {
@@ -3182,7 +3216,7 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
 
   const downloadAttachment = async (att) => {
     try {
-      const dataUrl = imgCache[att.id] || (await (await fetch(window.FIREBASE_DB_URL + "/shared/files/" + att.id + ".json")).json());
+      const dataUrl = imgCache[att.id] || (await fbGet("shared/files/" + att.id));
       const blobUrl = dataUrlToBlobUrl(dataUrl);
       const a = document.createElement("a");
       a.href = blobUrl; a.download = att.name;
@@ -3193,7 +3227,7 @@ function Messages({ data, persist, identity, onSent, onStartCall, callLink }) {
 
   const viewAttachment = async (att) => {
     try {
-      const dataUrl = imgCache[att.id] || (await (await fetch(window.FIREBASE_DB_URL + "/shared/files/" + att.id + ".json")).json());
+      const dataUrl = imgCache[att.id] || (await fbGet("shared/files/" + att.id));
       const blobUrl = dataUrlToBlobUrl(dataUrl);
       window.open(blobUrl, "_blank");
       setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);

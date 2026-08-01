@@ -88,7 +88,8 @@
         method: "PUT",
         headers: headers,
         body: JSON.stringify(value),
-      }).then(function () {
+      }).then(function (r) {
+        if (!r.ok) { throw new Error("Firebase write failed (" + r.status + ")"); }
         return { key: key, value: value, shared: true };
       });
     },
@@ -650,6 +651,7 @@ function App() {
   const persistCallLink = async (link) => {
     setCallLink(link);
     try {
+      await waitForAppCheckToken();
       await window.storage.set(CALL_LINK_KEY, link, true);
     } catch (e) {
       showToast("Could not save the call link — check your connection.");
@@ -759,7 +761,7 @@ function App() {
       if (!e.candidate) return;
       const field = role === "caller" ? "candidatesCaller" : "candidatesCallee";
       myCandCountRef.current += 1;
-      fbSet(`shared/calls/${callIdForConn}/${field}/${myCandCountRef.current}`, e.candidate.toJSON());
+      fbSet(`shared/calls/${callIdForConn}/${field}/${myCandCountRef.current}`, e.candidate.toJSON()).catch(() => {});
     };
     pc.ontrack = (e) => {
       if (e.track.kind === "audio" && remoteAudioRef.current) {
@@ -836,6 +838,7 @@ function App() {
     setCallPhase("outgoing");
     startRing();
     try {
+      await waitForAppCheckToken();
       const pc = createPeerConnection(newCallId, "caller");
       pcRef.current = pc;
       await attachLocalStream(pc);
@@ -866,6 +869,7 @@ function App() {
     setCallPeerName(callerName);
     setCallPhase("active");
     try {
+      await waitForAppCheckToken();
       const doc = await fbGet(`shared/calls/${incId}`);
       if (!doc || !doc.offer) { setCallError("Call is no longer available."); cleanupCall(); return; }
       const pc = createPeerConnection(incId, "callee");
@@ -890,12 +894,12 @@ function App() {
     setIncomingCall(null);
     incomingCallRef.current = null;
     await fbDelete(`shared/callSignals/${identity.id}`);
-    await fbSet(`shared/calls/${incId}/status`, "declined");
+    await fbSet(`shared/calls/${incId}/status`, "declined").catch(() => {});
   };
 
   const hangUpCall = async () => {
     const endingId = currentCallIdRef.current;
-    if (endingId) await fbSet(`shared/calls/${endingId}/status`, "ended");
+    if (endingId) await fbSet(`shared/calls/${endingId}/status`, "ended").catch(() => {});
     cleanupCall();
   };
 
@@ -1033,6 +1037,7 @@ function App() {
   const persistAccess = async (nextAccess) => {
     setAccess(nextAccess);
     try {
+      await waitForAppCheckToken();
       if (nextAccess) {
         await window.storage.set(ACCESS_KEY, JSON.stringify(nextAccess), true);
       } else {
@@ -1115,6 +1120,7 @@ function App() {
     setData(nextData);
     setSaving(true);
     try {
+      await waitForAppCheckToken();
       await window.storage.set(DATA_KEY, JSON.stringify(nextData), true);
     } catch (e) {
       showToast("Could not save — check your connection and try again.");
@@ -2237,12 +2243,28 @@ function fbUrl(path) { return window.FIREBASE_DB_URL + "/" + path + ".json"; }
 function appCheckHeaders() {
   return window.__appCheckToken ? { "X-Firebase-AppCheck": window.__appCheckToken } : {};
 }
+// waits for the App Check token to be ready (up to timeoutMs) before doing
+// something time-sensitive like starting a call — the very first token takes
+// a moment to generate after page load, and writes made before it's ready
+// get silently rejected by Firebase once enforcement is on
+async function waitForAppCheckToken(timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 5000);
+  while (!window.__appCheckToken && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
 async function fbSet(path, value) {
-  await fetch(fbUrl(path), { method: "PUT", headers: { "Content-Type": "application/json", ...appCheckHeaders() }, body: JSON.stringify(value) });
+  const res = await fetch(fbUrl(path), { method: "PUT", headers: { "Content-Type": "application/json", ...appCheckHeaders() }, body: JSON.stringify(value) });
+  if (!res.ok) {
+    let detail = "";
+    try { detail = JSON.stringify(await res.json()); } catch (e) {}
+    throw new Error(`Firebase write failed (${res.status}): ${detail || res.statusText}`);
+  }
 }
 async function fbGet(path) {
   try {
     const res = await fetch(fbUrl(path), { headers: { ...appCheckHeaders() } });
+    if (!res.ok) return null;
     return await res.json();
   } catch (e) { return null; }
 }

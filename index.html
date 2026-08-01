@@ -2256,6 +2256,20 @@ function computeMentions(text, team) {
 // ---------------------------------------------------------------------------
 const ICE_SERVERS = [
   { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  // free TURN relay fallback — used only when a direct connection is blocked
+  // (e.g. a restrictive corporate/office network firewall), which is exactly
+  // the failure pattern seen in testing: candidates exchange fine, but no
+  // direct path connects. WebRTC automatically prefers direct/STUN paths and
+  // only falls back to this relay when it has to.
+  {
+    urls: [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turn:openrelay.metered.ca:443?transport=tcp",
+    ],
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
 ];
 // finds a transceiver by media kind using the RECEIVER's track (always populated
 // with the correct kind once negotiated, unlike sender.track which can be null) —

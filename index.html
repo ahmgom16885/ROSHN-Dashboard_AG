@@ -324,7 +324,7 @@ const STRINGS = {
   en: {
     appTitle: "ROSHN Portfolio Dashboard", appSubtitle: "Remote Technical Management System",
     navOverview: "Overview", navProjects: "Projects", navTasks: "Tasks", navTeam: "Team", navMessages: "Messages", navReports: "Reports",
-    navAssistant: "Assistant",
+    navAssistant: "RS Assistant",
     aiSubtitle: "Ask about your projects, tasks, team, and messages.",
     aiEmpty: "Ask me anything about your portfolio.",
     aiPlaceholder: "Ask about projects, tasks, team…",
@@ -369,7 +369,7 @@ const STRINGS = {
   ar: {
     appTitle: "لوحة متابعة مشاريع روشن", appSubtitle: "نظام الإدارة الفنية عن بُعد",
     navOverview: "نظرة عامة", navProjects: "المشاريع", navTasks: "المهام", navTeam: "الفريق", navMessages: "الرسائل", navReports: "التقارير",
-    navAssistant: "المساعد",
+    navAssistant: "RS Assistant",
     aiSubtitle: "اسأل عن مشاريعك، مهامك، فريقك، ورسايلك.",
     aiEmpty: "اسألني أي حاجة عن المحفظة بتاعتك.",
     aiPlaceholder: "اسأل عن المشاريع، المهام، الفريق…",
@@ -1991,6 +1991,7 @@ function SettingsModal({ data, persist, access, persistAccess, identity, onClose
 const AI_WORKER_URL = "https://roshn-ai-assistant.ahmgom16885.workers.dev";
 const AI_DASHBOARD_SECRET = "ftO_DBnEsYfU-3KOEuEVbqiKVvQ-fMkj";
 const AI_MODEL = "gemini-3.6-flash";
+const AI_GRADIENT = "linear-gradient(135deg, " + GOLD + " 0%, " + TEAL + " 100%)";  
 
 const Sparkles = makeIcon(<><path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3Z"/><path d="M19 14l.7 1.8 1.8.7-1.8.7L19 19l-.7-1.8-1.8-.7 1.8-.7L19 14Z"/></>);
 
@@ -2162,7 +2163,7 @@ function AIChatPanel({ data, chat, setChat }) {
           />
           <button onClick={send} disabled={busy || !input.trim()}
             className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
-            style={{ background: NAVY }}>
+            style={{ background: AI_GRADIENT }}>
             {t("aiSend")}
           </button>
         </div>
@@ -2210,7 +2211,7 @@ function AIAssistantFab({ data, open, setOpen, chat, setChat }) {
             style={{ height: "80vh", maxHeight: 640 }}>
             <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: LINE }}>
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: NAVY }}>
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: AI_GRADIENT }}>
                   <Sparkles size={16} color="white" />
                 </div>
                 <span className="font-semibold text-sm" style={{ color: NAVY }}>{t("navAssistant")}</span>

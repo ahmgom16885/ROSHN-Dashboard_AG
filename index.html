@@ -2104,7 +2104,7 @@ function AIChatPanel({ data, chat, setChat }) {
       const answer = await callAI(next, data);
       setChat([...next, { role: "assistant", text: answer }]);
     } catch (err) {
-      setChat([...next, { role: "assistant", text: "⚠️ " + t("aiError") + " " + (err.message || "") }]);
+      const friendly = /quota|rate|429|resource|exhaust|location|unavailable|failed/i.test(err.message || "") ? "The assistant is a bit busy right now — please try again in a moment. 🙏" : (t("aiError") + " " + (err.message || "")); setChat([...next, { role: "assistant", text: "⚠️ " + friendly }]);
     } finally {
       setBusy(false);
     }

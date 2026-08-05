@@ -4205,8 +4205,8 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
               <p className="text-white/60 text-xs max-w-[220px] text-center">Your browser blocked audio from starting automatically</p>
             </button>
           )}
-          {localHasVideo ? (
-            <video ref={localVideoRef} autoPlay playsInline muted className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 object-cover rounded-xl border-2 border-white/20" />
+          {(localHasVideo || sharing) ? (
+            <video ref={localVideoRef} autoPlay playsInline muted className={"absolute bottom-4 right-4 rounded-xl border-2 border-white/20 " + (sharing ? "w-48 h-28 object-contain bg-black" : "w-28 h-36 sm:w-36 sm:h-48 object-cover")} />
           ) : (
             <div className="absolute bottom-4 right-4 w-28 h-20 sm:w-36 sm:h-24 rounded-xl border-2 border-white/20 flex items-center justify-center" style={{ background: "#1E293B" }}>
               <p className="text-white/50 text-[10px]">No camera</p>

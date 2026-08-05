@@ -746,11 +746,34 @@ function App() {
   const candAppliedFailRef = useRef(0);
   const callDocEsRef = useRef(null);
   const ringIntervalRef = useRef(null);
+  const titleFlashRef = useRef(null);
+  const startTitleFlash = (who) => {
+    stopTitleFlash();
+    const original = document.title;
+    let on = false;
+    titleFlashRef.current = { iv: null, original };
+    titleFlashRef.current.iv = setInterval(() => {
+      document.title = on ? original : ("📞 " + who + " calling…");
+      on = !on;
+    }, 800);
+  };
+  const stopTitleFlash = () => {
+    if (titleFlashRef.current) {
+      clearInterval(titleFlashRef.current.iv);
+      document.title = titleFlashRef.current.original;
+      titleFlashRef.current = null;
+    }
+  };
 
-  const startRing = () => {
+const startRing = () => {
     stopRing();
-    playTone(660, 0.3);
-    ringIntervalRef.current = setInterval(() => playTone(660, 0.3), 1500);
+    const ring = () => {
+      // two-note chime, like a phone ringtone
+      playTone(880, 0.18, 0);
+      playTone(1174, 0.22, 0.2);
+    };
+    ring();
+    ringIntervalRef.current = setInterval(ring, 2000);
   };
   const stopRing = () => {
     if (ringIntervalRef.current) { clearInterval(ringIntervalRef.current); ringIntervalRef.current = null; }
@@ -1116,19 +1139,40 @@ const attachLocalStream = async (pc) => {
     return () => clearInterval(iv);
   }, [callPhase]);
 
+// ask for notification permission once, so we can alert on incoming calls
+  useEffect(() => {
+    if (window.Notification && Notification.permission === "default") {
+      try { Notification.requestPermission().catch(() => {}); } catch (e) {}
+    }
+  }, [identity]);
+
   // listen for incoming calls addressed to me
   useEffect(() => {
     if (!identity || !window.FIREBASE_DB_URL) return;
     const check = async () => {
       const sig = await fbGet(`shared/callSignals/${identity.id}`);
-      if (sig && !currentCallIdRef.current && !incomingCallRef.current) {
+if (sig && !currentCallIdRef.current && !incomingCallRef.current) {
         incomingCallRef.current = sig;
         setIncomingCall(sig);
         startRing();
-      } else if (!sig && incomingCallRef.current) {
+        if (typeof document !== "undefined" && document.hidden) {
+          if (window.Notification && Notification.permission === "granted") {
+            try {
+              const n = new Notification("📞 " + (sig.fromName || "Someone") + " is calling you", {
+                body: "ROSHN Dashboard — click to answer",
+                requireInteraction: true,
+                tag: "roshn-incoming-call",
+              });
+              n.onclick = () => { try { window.focus(); n.close(); } catch (e) {} };
+            } catch (e) {}
+          }
+          startTitleFlash(sig.fromName || "Someone");
+        }
+} else if (!sig && incomingCallRef.current) {
         incomingCallRef.current = null;
         setIncomingCall(null);
         stopRing();
+        stopTitleFlash();
       }
     };
     check();

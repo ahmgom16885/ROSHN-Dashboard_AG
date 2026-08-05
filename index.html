@@ -804,7 +804,7 @@ function App() {
     return pc;
   };
 
-  const attachLocalStream = async (pc) => {
+const attachLocalStream = async (pc) => {
     let stream;
     let hasVideo = true;
     try {
@@ -816,11 +816,42 @@ function App() {
     }
     setLocalHasVideo(hasVideo);
     localStreamRef.current = stream;
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+
+    // add the audio track(s)
+    stream.getAudioTracks().forEach((t) => pc.addTrack(t, stream));
+
+    // add a video track — real camera if we have one, otherwise a blank
+    // placeholder track so a video sender ALWAYS exists. This lets screen
+    // sharing work via replaceTrack even on devices with no camera.
+    if (hasVideo) {
+      const camTrack = stream.getVideoTracks()[0];
+      cameraVideoTrackRef.current = camTrack;
+      pc.addTrack(camTrack, stream);
+    } else {
+      const blank = createBlankVideoTrack();
+      cameraVideoTrackRef.current = blank;
+      pc.addTrack(blank, stream);
+    }
+
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
       localVideoRef.current.play().catch(() => {});
     }
+  };
+
+  // creates a silent black 320x240 video track using a canvas — used as a
+  // placeholder on devices with no camera so a video sender always exists
+  const createBlankVideoTrack = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 320; canvas.height = 240;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#0B1220"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // keep the canvas "live" so the track produces frames
+    const iv = setInterval(() => { ctx.fillRect(0, 0, canvas.width, canvas.height); }, 1000);
+    const stream = canvas.captureStream(5);
+    const track = stream.getVideoTracks()[0];
+    track.addEventListener("ended", () => clearInterval(iv));
+    return track;
   };
 
   const listenToCallDoc = (callIdForConn, role) => {

@@ -953,8 +953,71 @@ function App() {
     setCamOn((s) => !s);
   };
 
-  // NOTE: screen sharing was removed for now — it needs proper WebRTC renegotiation
-  // to work reliably across browsers, which is a bigger, separate piece of work.
+// Screen share via replaceTrack — swaps the outgoing video track in place,
+  // so no renegotiation is needed. Works while camera is on or off.
+  const [sharing, setSharing] = useState(false);
+
+  const stopScreenShare = async () => {
+    const pc = pcRef.current;
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+    }
+    // put the camera track back (or a blank track if there was no camera)
+    if (pc) {
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+      const camTrack = cameraVideoTrackRef.current;
+      if (sender && camTrack) {
+        try { await sender.replaceTrack(camTrack); } catch (e) {}
+        camTrack.enabled = camOn;
+        if (localVideoRef.current && localStreamRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+        }
+      }
+    }
+    setSharing(false);
+  };
+
+  const startScreenShare = async () => {
+    const pc = pcRef.current;
+    if (!pc) return;
+    let display;
+    try {
+      display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    } catch (e) {
+      return; // user cancelled the picker
+    }
+    screenStreamRef.current = display;
+    const screenTrack = display.getVideoTracks()[0];
+
+    // remember the current camera track so we can restore it later
+    const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+    if (sender) {
+      if (!cameraVideoTrackRef.current && sender.track && sender.track.kind === "video") {
+        cameraVideoTrackRef.current = sender.track;
+      }
+      try { await sender.replaceTrack(screenTrack); } catch (e) {}
+    } else {
+      // audio-only call had no video sender — add one (this WILL renegotiate,
+      // which is fine as a fallback for the no-camera case)
+      try { pc.addTrack(screenTrack, display); } catch (e) {}
+    }
+
+    // show the shared screen in the local preview
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = display;
+      localVideoRef.current.play().catch(() => {});
+    }
+    setSharing(true);
+
+    // when the user clicks the browser's native "Stop sharing" bar
+    screenTrack.onended = () => { stopScreenShare(); };
+  };
+
+  const toggleScreenShare = () => {
+    if (sharing) stopScreenShare();
+    else startScreenShare();
+  };
 
   // cross-browser-safe check for whether the remote video element is actually
   // rendering real frames — more reliable than track mute/unmute events, which
@@ -1387,6 +1450,7 @@ function App() {
         localVideoRef={localVideoRef} remoteVideoRef={remoteVideoRef} remoteAudioRef={remoteAudioRef}
         onAccept={acceptIncomingCall} onDecline={declineIncomingCall} onHangUp={hangUpCall}
         onToggleMic={toggleMic} onToggleCam={toggleCam} onDismissError={() => setCallError("")}
+        onToggleScreen={toggleScreenShare} sharing={sharing}
       />
       <div className="flex max-w-7xl mx-auto">
         <SideNav tab={tab} setTab={setTab} />
@@ -4028,7 +4092,7 @@ function Reports({ data }) {
 // ---------------------------------------------------------------------------
 // CallOverlay — native 1-to-1 WebRTC call UI (incoming / outgoing / active)
 // ---------------------------------------------------------------------------
-function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, callDiag, audioBlocked, onResumeAudio, localVideoRef, remoteVideoRef, remoteAudioRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError }) {
+function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, camOn, localHasVideo, remoteHasVideo, callDiag, audioBlocked, onResumeAudio, localVideoRef, remoteVideoRef, remoteAudioRef, onAccept, onDecline, onHangUp, onToggleMic, onToggleCam, onDismissError, onToggleScreen, sharing }) {
   if (callError) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.6)" }}>
@@ -4127,6 +4191,9 @@ function CallOverlay({ incomingCall, callPhase, callPeerName, callError, micOn, 
           </button>
           <button onClick={onToggleCam} disabled={!localHasVideo} className="w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30" style={{ background: camOn ? "#1E293B" : "#B42318", color: "white" }}>
             {camOn ? <Video size={18} /> : <VideoOff size={18} />}
+          </button>
+          <button onClick={onToggleScreen} className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: sharing ? "#ED8001" : "#1E293B", color: "white" }} title="Share screen">
+            <ScreenShare size={18} />
           </button>
         </div>
       </div>

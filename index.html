@@ -776,9 +776,7 @@ const startRing = () => {
     ring();
     ringIntervalRef.current = setInterval(ring, 2600);
   };
-    ring();
-    ringIntervalRef.current = setInterval(ring, 2000);
-  };
+
   const stopRing = () => {
     if (ringIntervalRef.current) { clearInterval(ringIntervalRef.current); ringIntervalRef.current = null; }
   };

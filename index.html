@@ -740,6 +740,7 @@ function App() {
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const currentCallIdRef = useRef(null);
+  const callTargetRef = useRef(null);
   const incomingCallRef = useRef(null);
   const myCandCountRef = useRef(0);
   const appliedTheirCandCountRef = useRef(0);
@@ -971,6 +972,7 @@ const attachLocalStream = async (pc) => {
     setCallError("");
     const newCallId = uid();
     currentCallIdRef.current = newCallId;
+    callTargetRef.current = targetId;
     setCallPeerName(targetName);
     setCallPhase("outgoing");
     startRing();
@@ -1034,9 +1036,14 @@ const attachLocalStream = async (pc) => {
     await fbSet(`shared/calls/${incId}/status`, "declined").catch(() => {});
   };
 
-  const hangUpCall = async () => {
+const hangUpCall = async () => {
     const endingId = currentCallIdRef.current;
+    const target = callTargetRef.current;
     if (endingId) await fbSet(`shared/calls/${endingId}/status`, "ended").catch(() => {});
+    // if we hung up before they answered, remove the incoming-call signal so
+    // their phone stops ringing / clears the incoming screen
+    if (target) await fbDelete(`shared/callSignals/${target}`).catch(() => {});
+    callTargetRef.current = null;
     cleanupCall();
   };
 

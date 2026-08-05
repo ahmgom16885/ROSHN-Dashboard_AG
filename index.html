@@ -803,8 +803,36 @@ const startRing = () => {
     setAudioBlocked(false);
   };
 
-  const createPeerConnection = (callIdForConn, role) => {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+// fetch fresh Cloudflare TURN credentials from our Vercel /api/turn endpoint.
+  // credentials are cached for ~12h (they're valid 24h). falls back to the
+  // static ICE_SERVERS if the request fails, so calls never break outright.
+  const iceCacheRef = useRef(null);
+  const fetchIceServers = async () => {
+    const cache = iceCacheRef.current;
+    if (cache && (Date.now() - cache.at) < 12 * 60 * 60 * 1000) return cache.servers;
+    try {
+      const res = await fetch(AI_WORKER_URL.replace("/chat", "/turn"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Dashboard-Secret": AI_DASHBOARD_SECRET },
+      });
+      const data = await res.json();
+      if (res.ok && data && data.iceServers) {
+        const servers = [
+          { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+          data.iceServers, // Cloudflare returns a single { urls:[...], username, credential }
+        ];
+        iceCacheRef.current = { servers, at: Date.now() };
+        return servers;
+      }
+    } catch (e) {
+      console.error("TURN fetch failed, using fallback:", e);
+    }
+    return ICE_SERVERS; // fallback to the static list
+  };
+
+  const createPeerConnection = async (callIdForConn, role) => {
+    const iceServers = await fetchIceServers();
+    const pc = new RTCPeerConnection({ iceServers });
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
       const field = role === "caller" ? "candidatesCaller" : "candidatesCallee";
@@ -928,7 +956,7 @@ const attachLocalStream = async (pc) => {
     startRing();
     try {
       await waitForAppCheckToken();
-      const pc = createPeerConnection(newCallId, "caller");
+      const pc = await createPeerConnection(newCallId, "caller");
       pcRef.current = pc;
       await attachLocalStream(pc);
       const offer = await pc.createOffer();
@@ -961,7 +989,7 @@ const attachLocalStream = async (pc) => {
       await waitForAppCheckToken();
       const doc = await fbGet(`shared/calls/${incId}`);
       if (!doc || !doc.offer) { setCallError("Call is no longer available."); cleanupCall(); return; }
-      const pc = createPeerConnection(incId, "callee");
+      const pc = await createPeerConnection(incId, "callee");
       pcRef.current = pc;
       await attachLocalStream(pc);
       await pc.setRemoteDescription(new RTCSessionDescription(doc.offer));

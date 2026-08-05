@@ -768,10 +768,13 @@ function App() {
 const startRing = () => {
     stopRing();
     const ring = () => {
-      // two-note chime, like a phone ringtone
-      playTone(880, 0.18, 0);
-      playTone(1174, 0.22, 0.2);
+      // soft, warm two-note ring (lower + gentler than before)
+      playTone(587, 0.5, 0);     // D5 — warm
+      playTone(440, 0.55, 0.28); // A4 — settles lower, softer
     };
+    ring();
+    ringIntervalRef.current = setInterval(ring, 2600);
+  };
     ring();
     ringIntervalRef.current = setInterval(ring, 2000);
   };

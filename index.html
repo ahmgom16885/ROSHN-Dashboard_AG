@@ -202,6 +202,7 @@ const Flag = makeIcon(<><path d="M5 3v18"/><path d="M5 4h11l-2 4 2 4H5Z"/></>);
 const MessageCircle = makeIcon(<path d="M21 12a8 8 0 1 1-3.4-6.5L21 4l-1 4.5A7.9 7.9 0 0 1 21 12Z"/>);
 const RefreshCw = makeIcon(<><path d="M20 11A8 8 0 0 0 6 6.3L3 9"/><path d="M4 13a8 8 0 0 0 14 4.7L21 15"/><path d="M3 4v5h5"/><path d="M21 20v-5h-5"/></>);
 const Calendar = makeIcon(<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></>);
+const Search = makeIcon(<><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></>);  
 const ChevronRight = makeIcon(<polyline points="9 6 15 12 9 18"/>);
 const Trash2 = makeIcon(<><path d="M4 7h16"/><path d="M6 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/><path d="M19 7l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 7"/><path d="M10 11v6M14 11v6"/></>);
 const CheckCircle2 = makeIcon(<><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 5-5"/></>);
@@ -2978,6 +2979,23 @@ function Tasks({ data, persist, identity, filter, setFilter }) {
   const [showAdd, setShowAdd] = useState(false);
   const [openTask, setOpenTask] = useState(null);
   const isAdmin = data.adminId === identity.id;
+  const [view, setView] = useState(() => { try { return localStorage.getItem("roshn_tasks_view") || "list"; } catch (e) { return "list"; } });
+  const changeView = (v) => { setView(v); try { localStorage.setItem("roshn_tasks_view", v); } catch (e) {} };
+  const [query, setQuery] = useState("");
+  const memberOf = (id) => team.find((m) => m.id === id) || null;
+  const taskOverdue = (tk) => tk.dueDate && tk.status !== "done" && new Date(tk.dueDate) < new Date();
+  const prRank = { high: 0, medium: 1, low: 2 };
+  const sortTasks = (arr) => [...arr].sort((a, b) => {
+    const ao = taskOverdue(a) ? 0 : 1, bo = taskOverdue(b) ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    const ap = (prRank[a.priority] != null ? prRank[a.priority] : 3);
+    const bp = (prRank[b.priority] != null ? prRank[b.priority] : 3);
+    if (ap !== bp) return ap - bp;
+    const ad = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+    const bd = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+    return ad - bd;
+  });
+  const searched = filtered.filter((tk) => !query.trim() || (tk.title || "").toLowerCase().includes(query.trim().toLowerCase()));
 
   const filtered = tasks.filter((t) =>
     (filter.project === "all" || t.projectId === filter.project) &&
@@ -3052,38 +3070,99 @@ function Tasks({ data, persist, identity, filter, setFilter }) {
         )}
       </div>
 
-      <div className="flex flex-wrap gap-2">
+     {/* toolbar: search + filters + view toggle */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[180px]">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"><Search size={14} /></span>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tasks…" className="input text-xs" style={{ width: "100%", paddingLeft: 30 }} />
+        </div>
         <select value={filter.project} onChange={(e) => setFilter({ ...filter, project: e.target.value })} className="input !w-auto text-xs">
           <option value="all">{t("allProjects")}</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.code} · {p.name}</option>)}
         </select>
         <select value={filter.assignee} onChange={(e) => setFilter({ ...filter, assignee: e.target.value })} className="input !w-auto text-xs">
           <option value="all">{t("allTeam")}</option>
-          {team.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          {team.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
+        <div className="flex rounded-lg overflow-hidden border ml-auto" style={{ borderColor: LINE }}>
+          <button onClick={() => changeView("list")} className="px-3 py-1.5 text-xs font-medium flex items-center gap-1.5" style={{ background: view === "list" ? NAVY : "white", color: view === "list" ? "white" : NAVY }}>
+            <ListTodo size={13} /> List
+          </button>
+          <button onClick={() => changeView("board")} className="px-3 py-1.5 text-xs font-medium flex items-center gap-1.5" style={{ background: view === "board" ? NAVY : "white", color: view === "board" ? "white" : NAVY }}>
+            <LayoutDashboard size={13} /> Board
+          </button>
+        </div>
       </div>
 
-      <div className="flex md:grid md:grid-cols-4 gap-4 overflow-x-auto pb-2 -mx-4 px-4 md:mx-0 md:px-0" style={{ scrollSnapType: "x proximity" }}>
-        {columns.map((col) => (
-          <div key={col} className="bg-slate-50 rounded-xl p-3 min-h-[200px] shrink-0 w-[78vw] sm:w-72 md:w-auto" style={{ scrollSnapAlign: "start" }}>
-            <div className="flex items-center gap-2 mb-3 px-1">
-              <span className="w-2 h-2 rounded-full" style={{ background: STATUS[col].color }} />
-              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: STATUS[col].color }}>{t(col)}</p>
-              <span className="text-[10px] text-slate-400 ml-auto">{filtered.filter((t) => t.status === col).length}</span>
-            </div>
-            <div className="space-y-2">
-              {filtered.filter((t) => t.status === col).map((t) => (
-                <TaskCard key={t.id} task={t} project={projects.find((p) => p.id === t.projectId)} assignee={team.find((m) => m.id === t.assigneeId)}
-                  onClick={() => setOpenTask(t)} />
-              ))}
-              {filtered.filter((t) => t.status === col).length === 0 && (
-                <p className="text-[11px] text-slate-300 text-center py-6">{t("noTasks")}</p>
-              )}
-            </div>
+      {searched.length === 0 && (
+        <p className="text-sm text-slate-400 text-center py-10">{t("noTasks")}</p>
+      )}
+
+      {/* LIST VIEW */}
+      {view === "list" && searched.length > 0 && (
+        <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor: LINE }}>
+          <div className="hidden md:grid gap-3 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400 border-b" style={{ borderColor: LINE, gridTemplateColumns: "1fr 150px 90px 120px 110px" }}>
+            <span>Task</span><span>Assignee</span><span>Priority</span><span>Due</span><span>Status</span>
           </div>
-        ))}
-      </div>
-      <p className="text-[11px] text-slate-400 md:hidden">Swipe sideways to see all 4 columns →</p>
+          {sortTasks(searched).map((tk) => {
+            const m = memberOf(tk.assigneeId);
+            const p = projects.find((x) => x.id === tk.projectId);
+            const od = taskOverdue(tk);
+            return (
+              <button key={tk.id} onClick={() => setOpenTask(tk)}
+                className="w-full text-left grid grid-cols-1 md:items-center gap-1 md:gap-3 px-4 py-3 border-b hover:bg-slate-50 transition"
+                style={{ borderColor: LINE, borderLeft: od ? "3px solid #DC2626" : "3px solid transparent", gridTemplateColumns: undefined }}>
+                <div className="md:grid md:gap-3 md:items-center" style={{ gridTemplateColumns: "1fr 150px 90px 120px 110px" }}>
+                  <div className="min-w-0">
+                    {p && <span className="text-[10px] font-mono font-semibold mr-1.5" style={{ color: NAVY }}>{p.code}</span>}
+                    <span className="text-sm font-medium">{tk.title}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-1 md:mt-0">
+                    {m ? <><Avatar name={m.name} initials={m.initials} size={22} /><span className="text-xs text-slate-600 truncate">{m.name}</span></>
+                       : <span className="text-xs text-slate-400 italic">Unassigned</span>}
+                  </div>
+                  <div className="mt-1 md:mt-0">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: PRIORITY[tk.priority].color + "1A", color: PRIORITY[tk.priority].color }}>{PRIORITY[tk.priority].label}</span>
+                  </div>
+                  <div className={"text-xs flex items-center gap-1 mt-1 md:mt-0 " + (od ? "text-red-600 font-semibold" : "text-slate-500")}>
+                    {tk.dueDate ? <><Calendar size={11} /> {fmtDate(tk.dueDate)}{od ? " · Overdue" : ""}</> : <span className="text-slate-300">—</span>}
+                  </div>
+                  <div className="mt-1 md:mt-0">
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full" style={{ background: STATUS[tk.status].color + "1A", color: STATUS[tk.status].color }}>{t(tk.status)}</span>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* BOARD VIEW */}
+      {view === "board" && searched.length > 0 && (
+        <>
+          <div className="flex md:grid md:grid-cols-4 gap-4 overflow-x-auto pb-2 -mx-4 px-4 md:mx-0 md:px-0" style={{ scrollSnapType: "x proximity" }}>
+            {columns.map((col) => {
+              const colTasks = sortTasks(searched.filter((tk) => tk.status === col));
+              return (
+                <div key={col} className="bg-slate-50 rounded-xl p-3 min-h-[200px] shrink-0 w-[78vw] sm:w-72 md:w-auto" style={{ scrollSnapAlign: "start" }}>
+                  <div className="flex items-center gap-2 mb-3 px-1">
+                    <span className="w-2 h-2 rounded-full" style={{ background: STATUS[col].color }} />
+                    <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: STATUS[col].color }}>{t(col)}</p>
+                    <span className="text-[10px] text-slate-400 ml-auto">{colTasks.length}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {colTasks.map((tk) => (
+                      <TaskCard key={tk.id} task={tk} project={projects.find((p) => p.id === tk.projectId)} assignee={memberOf(tk.assigneeId)} onClick={() => setOpenTask(tk)} />
+                    ))}
+                    {colTasks.length === 0 && <p className="text-[11px] text-slate-300 text-center py-6">{t("noTasks")}</p>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-slate-400 md:hidden">Swipe sideways to see all 4 columns →</p>
+        </>
+      )}
 
       {showAdd && isAdmin && (
         <TaskModal projects={projects} team={team} onClose={() => setShowAdd(false)} onSave={addTask} />
@@ -3100,23 +3179,23 @@ function Tasks({ data, persist, identity, filter, setFilter }) {
 function TaskCard({ task, project, assignee, onClick }) {
   const overdue = task.dueDate && task.status !== "done" && new Date(task.dueDate) < new Date();
   return (
-    <button onClick={onClick} className="w-full text-left bg-white rounded-lg border p-3 hover:shadow-sm transition" style={{ borderColor: LINE }}>
+    <button onClick={onClick} className="w-full text-left bg-white rounded-lg border p-3 hover:shadow-sm transition" style={{ borderColor: LINE, borderLeft: overdue ? "3px solid #DC2626" : ("1px solid " + LINE) }}>
       {project && <p className="text-[10px] font-mono font-semibold mb-1" style={{ color: NAVY }}>{project.code}</p>}
       <p className="text-xs font-medium leading-snug">{task.title}</p>
-      <div className="flex items-center justify-between mt-2.5">
-        <div className="flex items-center gap-1.5">
-          {assignee && <Avatar name={assignee.name} initials={assignee.initials} size={20} />}
-          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: PRIORITY[task.priority].color + "1A", color: PRIORITY[task.priority].color }}>
-            {PRIORITY[task.priority].label}
-          </span>
-        </div>
-        {task.dueDate && (
-          <span className={`text-[10px] flex items-center gap-0.5 ${overdue ? "text-red-600 font-semibold" : "text-slate-400"}`}>
-            <Calendar size={10} /> {fmtDate(task.dueDate)}
-          </span>
-        )}
+      <div className="flex items-center gap-1.5 mt-2.5">
+        {assignee
+          ? <><Avatar name={assignee.name} initials={assignee.initials} size={20} /><span className="text-[10px] text-slate-600 truncate max-w-[90px]">{assignee.name}</span></>
+          : <span className="text-[10px] text-slate-400 italic">Unassigned</span>}
+        <span className="text-[10px] px-1.5 py-0.5 rounded ml-auto" style={{ background: PRIORITY[task.priority].color + "1A", color: PRIORITY[task.priority].color }}>
+          {PRIORITY[task.priority].label}
+        </span>
       </div>
-      {(task.comments && task.comments.length > 0) || (task.attachments && task.attachments.length > 0) ? (
+      {task.dueDate && (
+        <div className={"text-[10px] flex items-center gap-1 mt-1.5 " + (overdue ? "text-red-600 font-semibold" : "text-slate-400")}>
+          <Calendar size={10} /> {fmtDate(task.dueDate)}{overdue ? " · Overdue" : ""}
+        </div>
+      )}
+      {((task.comments && task.comments.length > 0) || (task.attachments && task.attachments.length > 0)) ? (
         <div className="flex items-center gap-3 mt-1.5">
           {task.comments && task.comments.length > 0 && (
             <p className="text-[10px] text-slate-400 flex items-center gap-1"><MessageCircle size={10} /> {task.comments.length}</p>

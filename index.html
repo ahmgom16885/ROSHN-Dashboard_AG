@@ -1960,7 +1960,7 @@ function Avatar({ name, initials, size = 34 }) {
 // ---------------------------------------------------------------------------
 // Top bar + side nav
 // ---------------------------------------------------------------------------
-function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggleSound, onLogout, onShare, notifications, unreadNotifCount, notifOpen, setNotifOpen, onMarkAllRead, onOpenNotification }) {
+function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggleSound, vibrateOn, onToggleVibrate, onLogout, onShare, notifications, unreadNotifCount, notifOpen, setNotifOpen, onMarkAllRead, onOpenNotification }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { t, lang, toggleLang } = useLang();
   return (

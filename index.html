@@ -194,6 +194,7 @@ const Users = makeIcon(<><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c0-3.6 2
 const MessageSquare = makeIcon(<path d="M4 4h16v12H8l-4 4Z"/>);
 const Plus = makeIcon(<><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>);
 const X = makeIcon(<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>);
+const Vibrate = makeIcon(<><rect x="8" y="2" width="8" height="20" rx="1"/><line x1="4" y1="9" x2="4" y2="15"/><line x1="20" y1="9" x2="20" y2="15"/></>);
 const Minimize2 = makeIcon(<><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></>);
 const Maximize2 = makeIcon(<><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></>);  
 const Send = makeIcon(<path d="M3 11 20 4l-6.5 17-3-7-7.5-3Z"/>);
@@ -433,6 +434,17 @@ function App() {
   const [access, setAccess] = useState(undefined); // undefined = not loaded yet, null = no code set
   const [showSettings, setShowSettings] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
+  const [vibrateOn, setVibrateOn] = useState(() => {
+    try { return localStorage.getItem("roshn_vibrate") !== "off"; } catch (e) { return true; }
+  });
+  const toggleVibrate = () => {
+    setVibrateOn((v) => {
+      const nv = !v;
+      try { localStorage.setItem("roshn_vibrate", nv ? "on" : "off"); } catch (e) {}
+      if (!nv) { try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {} }
+      return nv;
+    });
+  };
   const [lang, setLang] = useState("en");
   const pollRef = useRef(null);
   const audioCtxRef = useRef(null);
@@ -768,7 +780,21 @@ function App() {
       titleFlashRef.current = null;
     }
   };
-
+const vibrateIntervalRef = useRef(null);
+  const startVibrate = () => {
+    let on = true;
+    try { on = localStorage.getItem("roshn_vibrate") !== "off"; } catch (e) {}
+    if (!on || typeof navigator === "undefined" || !navigator.vibrate) return;
+    stopVibrate();
+    const buzz = () => { try { navigator.vibrate([400, 200, 400]); } catch (e) {} };
+    buzz();
+    vibrateIntervalRef.current = setInterval(buzz, 2000);
+  };
+  const stopVibrate = () => {
+    if (vibrateIntervalRef.current) { clearInterval(vibrateIntervalRef.current); vibrateIntervalRef.current = null; }
+    try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {}
+  };
+  
 const startRing = () => {
     stopRing();
     const ring = () => {
@@ -780,8 +806,9 @@ const startRing = () => {
     ringIntervalRef.current = setInterval(ring, 2600);
   };
 
-  const stopRing = () => {
+ const stopRing = () => {
     if (ringIntervalRef.current) { clearInterval(ringIntervalRef.current); ringIntervalRef.current = null; }
+    stopVibrate();
   };
 
   const cleanupCall = () => {
@@ -1210,6 +1237,7 @@ if (sig && !currentCallIdRef.current && !incomingCallRef.current) {
         incomingCallRef.current = sig;
         setIncomingCall(sig);
         startRing();
+        startVibrate();
         if (typeof document !== "undefined" && document.hidden) {
           if (window.Notification && Notification.permission === "granted") {
             try {
@@ -1551,7 +1579,7 @@ if (sig && !currentCallIdRef.current && !incomingCallRef.current) {
     <LangContext.Provider value={langValue}>
     <div dir={dir} style={{ background: PAPER, minHeight: "100vh", color: INK }} className="font-sans">
       <TopBar identity={identity} saving={saving} onRefresh={() => loadData(false)} onOpenSettings={() => setShowSettings(true)}
-        soundOn={soundOn} onToggleSound={toggleSound} onLogout={logout} onShare={shareDashboard}
+        soundOn={soundOn} onToggleSound={toggleSound} vibrateOn={vibrateOn} onToggleVibrate={toggleVibrate} onLogout={logout} onShare={shareDashboard}
         notifications={notifications} unreadNotifCount={unreadNotifCount} notifOpen={notifOpen} setNotifOpen={setNotifOpen}
         onMarkAllRead={markAllNotificationsRead}
         onOpenNotification={(n) => {
@@ -1965,6 +1993,9 @@ function TopBar({ identity, saving, onRefresh, onOpenSettings, soundOn, onToggle
           </button>
           <button onClick={onToggleSound} className="text-slate-200 hover:text-white p-1.5 rounded-md hover:bg-white/10" title={soundOn ? "Mute notification sounds" : "Unmute notification sounds"}>
             {soundOn ? <Volume2 size={16} /> : <VolumeX size={16} />}
+          </button>
+          <button onClick={onToggleVibrate} className="text-slate-200 hover:text-white p-1.5 rounded-md hover:bg-white/10" title={vibrateOn ? "Turn off call vibration" : "Turn on call vibration"} style={{ opacity: vibrateOn ? 1 : 0.4 }}>
+            <Vibrate size={16} />
           </button>
           <button onClick={onRefresh} className="text-slate-200 hover:text-white p-1.5 rounded-md hover:bg-white/10" title={t("refresh")}>
             <RefreshCw size={16} />

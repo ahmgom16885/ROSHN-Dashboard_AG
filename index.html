@@ -2995,12 +2995,12 @@ function Tasks({ data, persist, identity, filter, setFilter }) {
     const bd = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
     return ad - bd;
   });
-  const searched = filtered.filter((tk) => !query.trim() || (tk.title || "").toLowerCase().includes(query.trim().toLowerCase()));
 
   const filtered = tasks.filter((t) =>
     (filter.project === "all" || t.projectId === filter.project) &&
     (filter.assignee === "all" || t.assigneeId === filter.assignee)
   );
+  const searched = filtered.filter((tk) => !query.trim() || (tk.title || "").toLowerCase().includes(query.trim().toLowerCase()));
 
   // ensure a task's assignee is also a member of that project's channel — assigning
   // work to someone should always mean they can see that project's messages too

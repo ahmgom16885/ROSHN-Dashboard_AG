@@ -2230,38 +2230,50 @@ function buildAIContext(data) {
 
   const memberName = (id) => (team.find((m) => m.id === id) || {}).name || "Unassigned";
   const projName = (id) => { const p = projects.find((x) => x.id === id); return p ? (p.code + " · " + p.name) : "General"; };
+  const isOverdue = (t) => t.dueDate && t.status !== "done" && new Date(t.dueDate) < new Date();
 
+  // PROJECTS — one compact line each (health + task counts)
   const projLines = projects.map((p) => {
     const h = projectHealth(p, tasks);
     const pt = tasks.filter((t) => t.projectId === p.id);
     const openT = pt.filter((t) => t.status !== "done").length;
-    return "- [" + p.code + "] " + p.name + " — health: " + h.label + "; tasks: " + pt.length + " (" + openT + " open)";
+    return "- [" + p.code + "] " + p.name + " — health: " + h.label + "; " + pt.length + " tasks (" + openT + " open)";
   }).join("\n");
 
-  const taskLines = tasks.map((t) => {
-    const st = (STATUS[t.status] || {}).label || t.status;
-    const pr = (PRIORITY[t.priority] || {}).label || t.priority || "—";
-    const due = t.dueDate ? fmtDate(t.dueDate) : "no due date";
-    const overdue = (t.dueDate && t.status !== "done" && new Date(t.dueDate) < new Date()) ? " [OVERDUE]" : "";
-    return "- \"" + t.title + "\" | " + projName(t.projectId) + " | " + st + " | priority " + pr + " | assignee " + memberName(t.assigneeId) + " | due " + due + overdue;
-  }).join("\n");
+  // TASKS — full detail ONLY for open/overdue (the ones that matter).
+  // completed tasks are summarised as a count. keeps the prompt small & fast.
+  const openTasks = tasks.filter((t) => t.status !== "done");
+  const doneCount = tasks.length - openTasks.length;
+  const overdue = openTasks.filter(isOverdue);
+  const otherOpen = openTasks.filter((t) => !isOverdue(t));
+  const taskLine = (t) => "- \"" + t.title + "\" | " + projName(t.projectId) + " | " +
+    ((STATUS[t.status] || {}).label || t.status) + " | priority " +
+    ((PRIORITY[t.priority] || {}).label || t.priority || "—") + " | assignee " +
+    memberName(t.assigneeId) + " | due " + (t.dueDate ? fmtDate(t.dueDate) : "no due date") +
+    (isOverdue(t) ? " [OVERDUE]" : "");
+  const taskLines = [...overdue, ...otherOpen].map(taskLine).join("\n");
 
+  // TEAM — compact
   const teamLines = team.map((m) => "- " + m.name + " (" + (m.role || "member") + ")" + (m.initials ? " [" + m.initials + "]" : "")).join("\n");
 
-  const recentMsgs = messages.slice(-25).map((m) =>
-    "- " + memberName(m.authorId) + " in " + projName(m.projectId) + ": " + (m.text || "(attachment)").slice(0, 200)
+  // MESSAGES — last 12, trimmed
+  const recentMsgs = messages.slice(-12).map((m) =>
+    "- " + memberName(m.authorId) + " in " + projName(m.projectId) + ": " + (m.text || "(attachment)").slice(0, 120)
   ).join("\n");
 
   return [
-    "PORTFOLIO: " + projects.length + " projects, " + tasks.length + " tasks, " + team.length + " team members.",
+    "PORTFOLIO: " + projects.length + " projects, " + tasks.length + " tasks (" +
+      openTasks.length + " open, " + overdue.length + " overdue, " + doneCount + " done), " +
+      team.length + " team members.",
     "",
     "PROJECTS:\n" + (projLines || "none"),
     "",
-    "TASKS:\n" + (taskLines || "none"),
+    "OPEN & OVERDUE TASKS (full detail; overdue first):\n" + (taskLines || "none") +
+      "\n(" + doneCount + " completed tasks not listed individually — ask if you need them.)",
     "",
     "TEAM:\n" + (teamLines || "none"),
     "",
-    "RECENT MESSAGES (last 25):\n" + (recentMsgs || "none"),
+    "RECENT MESSAGES (last 12):\n" + (recentMsgs || "none"),
   ].join("\n");
 }
 

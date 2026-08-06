@@ -3516,7 +3516,7 @@ function Team({ data, persist, identity, presence, onCall, callPhase }) {
       </div>
 
       {showAdd && (
-        <Modal title={t("addMember")} onClose={() => { setShowAdd(false); setAddError(""); }}>
+        <Modal title={t("addMember")} persistent onClose={() => { setShowAdd(false); setAddError(""); }}>
           <div className="space-y-3">
             <Field label={t("name")}>
               <input value={name} onChange={(e) => { setName(e.target.value); if (!initialsTouched) setInitials(suggestInitials(e.target.value)); }} className="input" />
@@ -4388,9 +4388,9 @@ if (callPhase === "active") {
   return null;
 }
 
-function Modal({ title, children, onClose, wide }) {
+function Modal({ title, children, onClose, wide, persistent }) {
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" onClick={persistent ? undefined : onClose}>
       <div onClick={(e) => e.stopPropagation()} className={`bg-white rounded-2xl shadow-2xl w-full ${wide ? "max-w-lg" : "max-w-sm"} max-h-[85vh] overflow-y-auto`}>
         <div className="flex items-center justify-between px-5 py-4 border-b sticky top-0 bg-white" style={{ borderColor: LINE }}>
           <h2 className="text-sm font-semibold" style={{ color: NAVY }}>{title}</h2>

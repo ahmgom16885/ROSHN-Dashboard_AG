@@ -780,7 +780,7 @@ function App() {
       titleFlashRef.current = null;
     }
   };
-const vibrateIntervalRef = useRef(null);
+ const vibrateIntervalRef = useRef(null);
   const startVibrate = () => {
     let on = true;
     try { on = localStorage.getItem("roshn_vibrate") !== "off"; } catch (e) {}

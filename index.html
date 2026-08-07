@@ -1125,7 +1125,8 @@ const hangUpCall = async () => {
       return; // user cancelled the picker
     }
     screenStreamRef.current = display;
-    const screenTrack = display.getVideoTracks()[0];
+    const screenTrack = display.getVideoTracks()[0];   
+    try { screenTrack.contentHint = "detail"; } catch (e) {}
 
     // remember the current camera track so we can restore it later
     const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
@@ -1134,6 +1135,14 @@ const hangUpCall = async () => {
         cameraVideoTrackRef.current = sender.track;
       }
       try { await sender.replaceTrack(screenTrack); } catch (e) {}
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+        params.encodings[0].maxBitrate = 2500000;
+        params.encodings[0].maxFramerate = 15;
+        delete params.encodings[0].scaleResolutionDownBy;
+        await sender.setParameters(params);
+      } catch (e) {}
     } else {
       // audio-only call had no video sender — add one (this WILL renegotiate,
       // which is fine as a fallback for the no-camera case)
